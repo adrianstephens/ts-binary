@@ -80,7 +80,7 @@ export const isLittleEndian = (new Uint8Array(new Uint16Array([0x1234]).buffer))
 
 interface arrayBuffer {
 	length:			number;
-	buffer:			ArrayBuffer;
+	buffer:			ArrayBufferLike;
 	byteLength:		number;
 	byteOffset:		number;
 	slice(begin:	number, end?: number): arrayBuffer;

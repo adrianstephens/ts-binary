@@ -152,7 +152,7 @@ function writex<T extends object | number | string>(s: _stream, type: TypeX<T>, 
 //-----------------------------------------------------------------------------
 
 export class stream implements _stream {
-	protected buffer: ArrayBuffer;
+	protected buffer: ArrayBufferLike;
 	public offset0:	number;
 	public offset:	number;
 	public end:		number;
