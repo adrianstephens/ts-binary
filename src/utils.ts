@@ -134,24 +134,24 @@ export function to8(arg?: arrayBuffer) { return arg && new Uint8Array(arg.buffer
 
 export function to16(arg: arrayBuffer, be?: boolean) : Uint16Array;
 export function to16(arg?: arrayBuffer, be?: boolean) : Uint16Array | undefined;
-export function to16(arg?: arrayBuffer, be?: boolean) { return arg && new Uint16Array(fixEndian16(dupBuffer(arg), be)); }
+export function to16(arg?: arrayBuffer, be?: boolean) : Uint16Array | undefined { return arg && new Uint16Array(fixEndian16(dupBuffer(arg), be)); }
 export function to16s(arg: arrayBuffer, be?: boolean) : Int16Array;
 export function to16s(arg?: arrayBuffer, be?: boolean) : Int16Array | undefined;
-export function to16s(arg?: arrayBuffer, be?: boolean) { return arg && new Int16Array(fixEndian16(dupBuffer(arg), be)); }
+export function to16s(arg?: arrayBuffer, be?: boolean) : Int16Array | undefined { return arg && new Int16Array(fixEndian16(dupBuffer(arg), be)); }
 
 export function to32(arg: arrayBuffer, be?: boolean) : Uint32Array;
 export function to32(arg?: arrayBuffer, be?: boolean) : Uint32Array | undefined;
-export function to32(arg?: arrayBuffer, be?: boolean) { return arg && new Uint32Array(fixEndian32(dupBuffer(arg), be)); }
+export function to32(arg?: arrayBuffer, be?: boolean) : Uint32Array | undefined { return arg && new Uint32Array(fixEndian32(dupBuffer(arg), be)); }
 export function to32s(arg: arrayBuffer, be?: boolean) : Int32Array;
 export function to32s(arg?: arrayBuffer, be?: boolean) : Int32Array | undefined;
-export function to32s(arg?: arrayBuffer, be?: boolean) { return arg && new Int32Array(fixEndian32(dupBuffer(arg), be)); }
+export function to32s(arg?: arrayBuffer, be?: boolean) : Int32Array | undefined { return arg && new Int32Array(fixEndian32(dupBuffer(arg), be)); }
 
 export function to64(arg: arrayBuffer, be?: boolean) : BigUint64Array;
 export function to64(arg?: arrayBuffer, be?: boolean) : BigUint64Array | undefined;
-export function to64(arg?: arrayBuffer, be?: boolean) { return arg && new BigUint64Array(fixEndian64(dupBuffer(arg), be)); }
+export function to64(arg?: arrayBuffer, be?: boolean) : BigUint64Array | undefined { return arg && new BigUint64Array(fixEndian64(dupBuffer(arg), be)); }
 export function to64s(arg: arrayBuffer, be?: boolean) : BigInt64Array;
 export function to64s(arg?: arrayBuffer, be?: boolean) : BigInt64Array | undefined;
-export function to64s(arg?: arrayBuffer, be?: boolean) { return arg && new BigInt64Array(fixEndian64(dupBuffer(arg), be)); }
+export function to64s(arg?: arrayBuffer, be?: boolean) : BigInt64Array | undefined { return arg && new BigInt64Array(fixEndian64(dupBuffer(arg), be)); }
 
 
 export function findValue(buf: Uint8Array | undefined, value = 0, size = 1/*, be?: boolean*/): number {
@@ -159,7 +159,7 @@ export function findValue(buf: Uint8Array | undefined, value = 0, size = 1/*, be
 		: size === 1 ? buf.indexOf(value)
 		: size === 2 ? (new Uint16Array(buf)).indexOf(value) * 2
 		: size === 4 ? (new Uint32Array(buf)).indexOf(value) * 4
-		: size === 8 ? (new BigInt64Array(buf)).indexOf(BigInt(value)) * 8
+		: size === 8 ? (new BigInt64Array(buf.buffer, buf.byteOffset, Math.floor(buf.byteLength / 8))).indexOf(BigInt(value)) * 8
 		: 0;
 }
 

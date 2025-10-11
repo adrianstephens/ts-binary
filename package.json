@@ -1,6 +1,6 @@
 {
 	"name": "@isopodlabs/binary",
-	"version": "1.4.4",
+	"version": "1.5.0",
 	"description": "A package for reading and writing binary data with TypeScript.",
 	"repository": {
 		"type": "git",
