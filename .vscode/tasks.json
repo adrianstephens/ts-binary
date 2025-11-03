@@ -5,7 +5,7 @@
 			"type": "npm",
 			"script": "build",
 			"group": "build",
-			"problemMatcher": "$tsc-watch",
+			"problemMatcher": "$tsc",
 			"label": "npm: build",
 			"detail": "tsc"
 		},
@@ -14,7 +14,7 @@
 			"label": "prepublish",
 			"command": "git add .; npm version ${input:version} --force",
 			"windows": {
-				"command": "git add . & npm version ${input:version} --force",
+				"command": "git add . & npm version ${input:version} --force"
 			},
 			"problemMatcher": [],
 			"dependsOn": "npm: build"
@@ -33,6 +33,13 @@
 			"problemMatcher": [],
 			"dependsOn": "npm: build"
 		},
+		{
+			"type": "npm",
+			"script": "lint",
+			"problemMatcher": [],
+			"label": "lint",
+			"detail": "eslint \"src/**/*.ts\""
+		}
 	],
 	"inputs": [
 		{

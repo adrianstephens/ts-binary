@@ -105,9 +105,8 @@ function pairSwap(a: arrayBuffer) {
 }
 
 function fixEndian16(a: ArrayBuffer, be?: boolean) {
-	if (be === isLittleEndian) {
+	if (be === isLittleEndian)
 		pairSwap(new Uint8Array(a));
-	}
 	return a;
 }
 
