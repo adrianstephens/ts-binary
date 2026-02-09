@@ -1,42 +1,47 @@
 import * as utils from './utils';
-export * as utils from './utils';
+
+export type View<T> = new(a: ArrayBufferLike, offset: number, length: number)=>T;
 
 export interface _stream {
 	be?: boolean;							// read numbers as bigendian/littleendian
 	obj?: any;								// current object being read
-//	post?: (()=>void)[];
 	remaining(): number;					// number of remaining bytes
 	remainder(): any;						// buffer of remaining bytes
 	tell(): number;							// current offset from start of file
 	seek(offset: number): void;				// set current offset from start of file
 	skip(offset: number): void;				// move current offset from start of file
-	align(align: number): void;				// align current offset from start of file
-	dataview(len: number): DataView;		// get DataView containing len bytes, and move current offset
 	read_buffer(len: number): any;			// return buffer containing next len bytes, and move current offset
 	write_buffer(value: Uint8Array): void;	// write buffer contents at current offset, and move current offset
+	view<T>(type: View<T>, len: number): T;
 }
 
 export interface TypeReaderT<T> { get(s: _stream): T }
 interface TypeWriterT<T> { put(s: _stream, v: T): void }
 export type TypeT<T>	= TypeReaderT<T> & TypeWriterT<T>;
+export type TypeX<T>	= TypeT<T> | ((s: _stream)=>T) | T;
 
-export type TypeReader	= TypeReaderT<any> | { [key: string]: TypeReader; }
-export type TypeWriter	= TypeWriterT<any> | { [key: string]: TypeWriter; }
-export type Type 		= TypeT<any> | { [key: string]: Type; }
+export type TypeReader	= TypeReaderT<any> | { [key: string]: TypeReader; } | TypeReaderT<any>[]
+export type TypeWriter	= TypeWriterT<any> | { [key: string]: TypeWriter; } | TypeWriterT<any>[]
+export type Type 		= TypeT<any> | { [key: string]: Type; } | TypeT<any>[]
 
 export interface MergeType<T> { merge: T; }
 
-//export type ReadType<T> = T extends TypeReaderT<infer R> ? R : 
-//	{[K in keyof T]: T[K] extends TypeReaderT<infer R> ? (R extends MergeType<infer _U> ? never : R) : never}
-//&	{[K in keyof T as T[K] extends TypeReaderT<infer _R extends MergeType<infer U>> ? keyof U : never]: T[K] extends TypeReaderT<infer _R extends MergeType<infer U>> ? U[keyof U] : never};
+type UnionToIntersection<U> = (U extends any ? (x: U) => void : never) extends (x: infer I) => void ? I : never;
 
-interface TypeReader0<T> { get: (...args: any) => T }
+type TupleReadType<T extends readonly unknown[]> = T extends readonly [infer First, ...infer Rest]
+	? [ReadType<First>, ...TupleReadType<Rest>]
+	: [];
 
-export type ReadType<T> =
-	T extends {new (s: infer _S extends _stream): infer R} ? R : T extends TypeReader0<infer R> ? R
-	: T extends { [key: string]: any } ? { [K in keyof T]:  T[K] extends {new (s: infer _S extends _stream): infer R} ? R : T[K] extends { get: (...args: any) => infer R } ? (R extends MergeType<infer _U> ? never : R) : never}
-	: never
-&	{[K in keyof T as T[K] extends TypeReader0<infer _R extends MergeType<infer U>> ? keyof U : never]: T[K] extends TypeReader0<infer _R extends MergeType<infer U>> ? U[keyof U] : never};
+export type ReadType<T> = T extends {new (s: infer _S extends _stream): infer R} ? R
+	: T extends { get: (s: infer S extends _stream) => infer R } ? R
+	: T extends readonly unknown[] ? TupleReadType<T>
+	: T extends { [key: string]: any } ? (
+		{ [K in keyof T as T[K] extends { new (...args: any): any } ? K : T[K] extends { get: (...args: any) => infer R } ? (R extends MergeType<any> ? never : K) : K]: ReadType<T[K]> }
+		& UnionToIntersection<Exclude<{
+			[K in keyof T]: T[K] extends { new (...args: any): any } ? never : T[K] extends { get: (...args: any) => infer R } ? (R extends MergeType<infer U> ? U : never) : never
+		}[keyof T], never>>
+	)
+	: never;
 
 export function ReadClass<T extends TypeReader>(spec: T) {
 	return class ReadClass {
@@ -65,7 +70,7 @@ export function Class<T extends Type>(spec: T) {
 		write(s: _stream) 	{
 			write(s, spec, this);
 		}
-	} as (new(s: _stream) => ReadType<T> & { write(w: _stream): void}) & {
+	} as (new(s: _stream) => ReadType<T> & { write(w: _stream): void }) & {
 		get:<X extends abstract new (...args: any) => any>(this: X, s: _stream) => InstanceType<X>,
 		put:(s: _stream, v: any) => void
 	};
@@ -135,14 +140,12 @@ export function write(s: _stream, type: TypeWriter, value: any) : void {
 		Object.entries(type).map(([k, t]) => write(s, t, value[k]));
 }
 
-export type TypeX<T>	= TypeT<T> | ((s: _stream)=>T) | T;
-
-function readx<T extends object | number | string | boolean>(s: _stream, type: TypeX<T>): T {
+export function readx<T extends object | number | string | boolean>(s: _stream, type: TypeX<T>): T {
 	return typeof type === 'function' ? type(s)
 		:	isReader(type) ?	type.get(s)
 		:	type;
 }
-function writex<T extends object | number | string>(s: _stream, type: TypeX<T>, value: T) {
+export function writex<T extends object | number | string>(s: _stream, type: TypeX<T>, value: T) {
 	if (isWriter(type))
 		type.put(s, value);
 }
@@ -179,18 +182,6 @@ export class stream implements _stream {
 		this.offset += offset;
 		return this;
 	}
-	public align(align: number) {
-		const offset = this.tell() % align;
-		if (offset)
-			this.skip(align - offset);
-	}
-	public dataview(len: number) {
-		if (this.offset + len > this.end)
-			throw new Error('stream: out of bounds');
-		const dv = new DataView(this.buffer, this.offset);
-		this.offset += len;
-		return dv;
-	}
 	public buffer_at(offset: number, len?: number) {
 		return new Uint8Array(this.buffer, this.offset0 + offset, len ?? this.end - (this.offset0 + offset));
 	}
@@ -200,10 +191,17 @@ export class stream implements _stream {
 		return new Uint8Array(this.buffer, offset, this.offset - offset);
 	}
 	public write_buffer(v: Uint8Array) {
-		const dv = this.dataview(v.length);
+		const dv = this.view(DataView, v.length);
 		let offset = 0;
 		for (const i of v)
 			dv.setUint8(offset++, v[i]);
+	}
+	public view<T>(type: View<T>, len: number): T {
+		if (this.offset + len > this.end)
+			throw new Error('stream: out of bounds');
+		const _t = new type(this.buffer, this.offset, len);
+		this.offset += len;
+		return _t;
 	}
 }
 
@@ -220,9 +218,9 @@ export class growingStream extends stream {
 			this.offset0 = 0;
 		}
 	}
-	public dataview(len: number) {
+	public view<T>(type: View<T>, len: number): T {
 		this.checksize(len);
-		return super.dataview(len);
+		return super.view(type, len);
 	}
 	public buffer_at(offset: number, len: number) {
 		this.checksize(offset + len - this.offset);
@@ -246,6 +244,24 @@ export class endianStream extends stream {
 	constructor(data: Uint8Array, public be: boolean) {
 		super(data);
 	}
+}
+
+function clone<T extends object>(obj: T) : T {
+	return Object.assign(Object.create(Object.getPrototypeOf(obj)), obj);
+}
+
+export function offsetStream(s: _stream, offset: number, size?: number) {
+	const s2	= clone(s) as stream;
+	s2.offset	= s2.offset0 += offset;
+	if (size)
+		s2.end	= s2.offset + size;
+	return s2;
+}
+
+function alignStream(s: _stream, align: number) {
+	const offset = s.tell() % align;
+	if (offset)
+		s.skip(align - offset);
 }
 
 //-----------------------------------------------------------------------------
@@ -289,12 +305,11 @@ export class dummy implements _stream {
 	public tell() 					{ return this.offset; }
 	public seek(offset: number) 	{ this.offset = offset; }
 	public skip(offset: number) 	{ this.offset += offset; }
-	public align(align: number) 	{ const offset = this.tell() % align; if (offset) this.skip(align - offset); }
 
-	public dataview(len: number)	{
+	public view<T>(type: View<T>, len: number): T {
 		const dv = new dummy_dataview(this.offset);
 		this.offset += len;
-		return dv;
+		return dv as T;
 	}
 	public read_buffer(len: number) {
 		const offset = this.offset;
@@ -326,22 +341,22 @@ function endian<T extends number | bigint>(type: (be?: boolean)=>TypeT<T>, be?: 
 
 //8 bit
 export const UINT8: TypeT<number> = {
-	get(s: _stream) 			{ return s.dataview(1).getUint8(0); },
-	put(s: _stream, v: number)	{ s.dataview(1).setUint8(0, v); }
+	get(s: _stream) 			{ return s.view(DataView, 1).getUint8(0); },
+	put(s: _stream, v: number)	{ s.view(DataView, 1).setUint8(0, v); }
 };
 export const INT8: TypeT<number> = {
-	get(s: _stream) 			{ return s.dataview(1).getInt8(0); },
-	put(s: _stream, v: number)	{ s.dataview(1).setInt8(0, v); }
+	get(s: _stream) 			{ return s.view(DataView, 1).getInt8(0); },
+	put(s: _stream, v: number)	{ s.view(DataView, 1).setInt8(0, v); }
 };
 
 //16 bit
 function _UINT16(be?: boolean): TypeT<number> { return {
-	get(s: _stream, ) 			{ return s.dataview(2).getUint16(0, !be); },
-	put(s: _stream, v: number)	{ s.dataview(2).setUint16(0, v, !be); }
+	get(s: _stream, ) 			{ return s.view(DataView, 2).getUint16(0, !be); },
+	put(s: _stream, v: number)	{ s.view(DataView, 2).setUint16(0, v, !be); }
 };}
 function _INT16(be?: boolean): TypeT<number> { return {
-	get(s: _stream, ) 			{ return s.dataview(2).getInt16(0, !be); },
-	put(s: _stream, v: number)	{ s.dataview(2).setInt16(0, v, !be); }
+	get(s: _stream, ) 			{ return s.view(DataView, 2).getInt16(0, !be); },
+	put(s: _stream, v: number)	{ s.view(DataView, 2).setInt16(0, v, !be); }
 };}
 export const UINT16_LE	= _UINT16(false);
 export const UINT16_BE	= _UINT16(true);
@@ -352,12 +367,12 @@ export const INT16		= endian_from_stream(_INT16);
 
 //32 bit
 function _UINT32(be?: boolean): TypeT<number> { return {
-	get(s: _stream, ) 			{ return s.dataview(4).getUint32(0, !be); },
-	put(s: _stream, v: number)	{ s.dataview(4).setUint32(0, v, !be); }
+	get(s: _stream, ) 			{ return s.view(DataView, 4).getUint32(0, !be); },
+	put(s: _stream, v: number)	{ s.view(DataView, 4).setUint32(0, v, !be); }
 };}
 function _INT32(be?: boolean): TypeT<number> { return {
-	get(s: _stream, ) 			{ return s.dataview(4).getInt32(0, !be); },
-	put(s: _stream, v: number)	{ s.dataview(4).setInt32(0, v, !be); }
+	get(s: _stream, ) 			{ return s.view(DataView, 4).getInt32(0, !be); },
+	put(s: _stream, v: number)	{ s.view(DataView, 4).setInt32(0, v, !be); }
 };}
 export const UINT32_LE	= _UINT32(false);
 export const UINT32_BE	= _UINT32(true);
@@ -368,12 +383,12 @@ export const INT32 		= endian_from_stream(_INT32);
 
 //64 bit 
 function _UINT64(be?: boolean): TypeT<bigint> { return {
-	get(s: _stream, ) 			{ return utils.getBigUint(s.dataview(8), 8, !be); },
-	put(s: _stream, v: bigint)	{ utils.putBigUint(s.dataview(8), v, 8, !be); }
+	get(s: _stream, ) 			{ return utils.getBigUint(s.view(DataView, 8), 8, !be); },
+	put(s: _stream, v: bigint)	{ utils.putBigUint(s.view(DataView, 8), v, 8, !be); }
 };}
 function _INT64(be?: boolean): TypeT<bigint> { return {
-	get(s: _stream, ) 			{ return utils.getBigInt(s.dataview(8), 8, !be); },
-	put(s: _stream, v: bigint)	{ utils.putBigUint(s.dataview(8), v, 8, !be); }
+	get(s: _stream, ) 			{ return utils.getBigInt(s.view(DataView, 8), 8, !be); },
+	put(s: _stream, v: bigint)	{ utils.putBigUint(s.view(DataView, 8), v, 8, !be); }
 };}
 
 export const UINT64_LE	= _UINT64(false);
@@ -388,44 +403,46 @@ export function UINT<T extends number>(bits: T, be?: boolean): TypeNumber<T> {
 	if (bits & 7)
 		throw new Error('bits must be multiple of 8');
 
-	return bits === 8 ? UINT8 as TypeNumber<T>
+	return (bits === 8 ? UINT8
 		: bits > 56
 		? endian((be?: boolean) => ({
-			get(s: _stream) 			{ return utils.getBigUint(s.dataview(bits / 8), bits / 8, !be); },
-			put(s: _stream, v: bigint)	{ utils.putBigUint(s.dataview(bits / 8), v, bits / 8, !be); }
-		}), be) as TypeNumber<T>
+			get(s: _stream) 			{ return utils.getBigUint(s.view(DataView, bits / 8), bits / 8, !be); },
+			put(s: _stream, v: bigint)	{ utils.putBigUint(s.view(DataView, bits / 8), v, bits / 8, !be); }
+		}), be)
 		: endian(bits == 16 ? _UINT16 : bits == 32 ? _UINT32 :
 		(be?: boolean) => ({
-			get(s: _stream) 			{ return utils.getUint(s.dataview(bits / 8), bits / 8, !be); },
-			put(s: _stream, v: number)	{ utils.putUint(s.dataview(bits / 8), v, bits / 8, !be); }
-		}), be) as TypeNumber<T>;
+			get(s: _stream) 			{ return utils.getUint(s.view(DataView, bits / 8), bits / 8, !be); },
+			put(s: _stream, v: number)	{ utils.putUint(s.view(DataView, bits / 8), v, bits / 8, !be); }
+		}), be)
+	 ) as TypeNumber<T>;
 }
 
 export function INT<T extends number>(bits: T, be?: boolean): TypeNumber<T> {
 	if (bits & 7)
 		throw new Error('bits must be multiple of 8');
 
-	return bits === 8 ? UINT8 as TypeNumber<T>
+	return (bits === 8 ? UINT8
 		: bits > 56
 		? endian((be?: boolean) => ({
-			get(s: _stream) 			{ return utils.getBigInt(s.dataview(bits / 8), bits / 8, !be); },
-			put(s: _stream, v: bigint)	{ utils.putBigUint(s.dataview(bits / 8), v, bits / 8, !be); }
-		}), be) as TypeNumber<T>
+			get(s: _stream) 			{ return utils.getBigInt(s.view(DataView, bits / 8), bits / 8, !be); },
+			put(s: _stream, v: bigint)	{ utils.putBigUint(s.view(DataView, bits / 8), v, bits / 8, !be); }
+		}), be)
 		: endian(bits == 16 ? _INT16 : bits == 32 ? _INT32 :
 		(be?: boolean) => ({
-			get(s: _stream) 			{ return utils.getInt(s.dataview(bits / 8), bits / 8, !be); },
-			put(s: _stream, v: number)	{ utils.putUint(s.dataview(bits / 8), v, bits / 8, !be); }
-		}), be) as TypeNumber<T>;
+			get(s: _stream) 			{ return utils.getInt(s.view(DataView, bits / 8), bits / 8, !be); },
+			put(s: _stream, v: number)	{ utils.putUint(s.view(DataView, bits / 8), v, bits / 8, !be); }
+		}), be)
+	) as TypeNumber<T>;
 }
 
 //float
 function _Float32(be?: boolean): TypeT<number> { return {
-	get(s: _stream) 			{ return s.dataview(4).getFloat32(0, !be); },
-	put(s: _stream, v: number)	{ s.dataview(4).setFloat32(0, v, !be); }
+	get(s: _stream) 			{ return s.view(DataView, 4).getFloat32(0, !be); },
+	put(s: _stream, v: number)	{ s.view(DataView, 4).setFloat32(0, v, !be); }
 };}
 function _Float64(be?: boolean): TypeT<number> { return {
-	get(s: _stream) 			{ return s.dataview(8).getFloat64(0, !be); },
-	put(s: _stream, v: number)	{ s.dataview(8).setFloat64(0, v, !be); }
+	get(s: _stream) 			{ return s.view(DataView, 8).getFloat64(0, !be); },
+	put(s: _stream, v: number)	{ s.view(DataView, 8).setFloat64(0, v, !be); }
 };}
 export const Float32_LE = _Float32(false);
 export const Float32_BE = _Float32(true);
@@ -486,7 +503,8 @@ export function StringType(len: TypeX<number>, encoding: utils.TextEncoding = 'u
 		get(s: _stream) 	{
 			const len2	= readx(s, len);
 			const v 	= utils.decodeText(s.read_buffer(len2 * lenScale2), encoding);
-			return zeroTerminated ? v.slice(0, -1) : v;
+			const z = zeroTerminated ? v.indexOf('\0') : -1;
+			return z >= 0 ? v.substring(0, z) : v;
 		},
 		put(s: _stream, v: string) {
 			if (zeroTerminated)
@@ -501,7 +519,7 @@ export const NullTerminatedStringType: TypeT<string> = {
 	get(s: _stream) 	{
 		const buf: number[] = [];
 		let b;
-		while ((b = s.dataview(1).getUint8(0)) != 0)
+		while ((b = s.view(DataView, 1).getUint8(0)) != 0)
 			buf.push(b);
 		return String.fromCharCode(...buf);
 	},
@@ -593,14 +611,20 @@ export function objectWithNames<T extends Type>(type: T, func:(v: any, i: number
 //	other types
 //-----------------------------------------------------------------------------
 
-function clone<T extends object>(obj: T) : T {
-	return Object.assign(Object.create(Object.getPrototypeOf(obj)), obj);
-}
-
 export function Struct<T extends Type>(spec: T): TypeT<ReadType<T>> {
 	return {
 		get:(s: _stream) 				=> read(s, spec),
 		put:(s: _stream, v: any)		=> write(s, spec, v)
+	};
+}
+
+type SpecT<T> = TypeT<T> | {
+	[K in keyof T]: SpecT<T[K]>
+}
+export function StructT<T>(spec: SpecT<T>): TypeT<T> {
+	return {
+		get:(s: _stream) 				=> read(s, spec) as T,
+		put:(s: _stream, v: T)			=> write(s, spec, v)
 	};
 }
 
@@ -624,9 +648,10 @@ export function SkipType(len: number): TypeT<void> {
 }
 
 export function AlignType(align: number): TypeT<void> {
+
 	return {
-		get: (s: _stream) 				=> s.align(align),
-		put: (s: _stream)				=> s.align(align)
+		get: (s: _stream) 				=> alignStream(s, align),
+		put: (s: _stream)				=> alignStream(s, align)
 	};
 }
 
@@ -704,10 +729,10 @@ export function FuncType<T extends Type>(func: (s: _stream)=>T): TypeT<ReadType<
 	};
 }
 
-export function If<T extends Type, F extends Type | undefined>(test: TypeX<boolean | number>, true_type: T, false_type?: F) {
-	type R = ReadType<T | F>;
+export function If<T extends Type, F extends Type | undefined = undefined>(test: TypeX<boolean | number>, true_type: T, false_type?: F) {
+	type R = F extends Type ? ReadType<T | F> : ReadType<T | undefined>;
 	return {
-		get(s: _stream) 	{
+		get(s: _stream) : MergeType<R>	{
 			const x = readx(s, test);
 			if (false_type)
 				read_merge(s, x ? true_type : false_type);
@@ -719,11 +744,18 @@ export function If<T extends Type, F extends Type | undefined>(test: TypeX<boole
 	};
 }
 
-export function Optional<T extends Type>(test: TypeX<boolean | number>, type: T): TypeT<ReadType<T> | undefined> {
-	type R = ReadType<T>;
+
+export function Optional<T extends Type, F extends Type | undefined = undefined>(test: TypeX<boolean | number>, type: T, false_type?: F) {
+	type R = F extends Type ? ReadType<T | F> : ReadType<T | undefined>;
 	return {
-		get(s: _stream) 			{ return readx(s, test) ? read(s, type) : undefined; },
-		put(_s: _stream, _v?: R)	{}
+		get(s: _stream) {
+			if (readx(s, test))
+				return read(s, type) as R;
+			if (false_type)
+				return read(s, false_type as Type) as R;
+			return undefined as R;
+		},
+		put(_s: _stream, _v: any) {}
 	};
 }
 
