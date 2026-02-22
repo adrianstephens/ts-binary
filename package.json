@@ -1,6 +1,6 @@
 {
 	"name": "@isopodlabs/binary",
-	"version": "1.5.0",
+	"version": "1.6.0",
 	"description": "A package for reading and writing binary data with TypeScript.",
 	"repository": {
 		"type": "git",
@@ -14,8 +14,7 @@
 	"scripts": {
 		"build": "tsc",
 		"watch": "tsc -watch -p ./",
-		"lint": "eslint \"src/**/*.ts\"",
-		"test": "echo \"No tests specified\" && exit 0"
+		"lint": "eslint \"src/**/*.ts\""
 	},
 	"keywords": [
 		"binary",

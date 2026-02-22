@@ -1,4 +1,5 @@
 import * as utils from './utils';
+export * as utils from './utils';
 
 export type View<T> = new(a: ArrayBufferLike, offset: number, length: number)=>T;
 
@@ -36,7 +37,7 @@ export type ReadType<T> = T extends {new (s: infer _S extends _stream): infer R}
 	: T extends { get: (s: infer S extends _stream) => infer R } ? R
 	: T extends readonly unknown[] ? TupleReadType<T>
 	: T extends { [key: string]: any } ? (
-		{ [K in keyof T as T[K] extends { new (...args: any): any } ? K : T[K] extends { get: (...args: any) => infer R } ? (R extends MergeType<any> ? never : K) : K]: ReadType<T[K]> }
+		{ [K in keyof T as T[K] extends { new (...args: any): any } ? K : T[K] extends { get: (...args: any) => infer R } ? (R extends MergeType<any> ? never : R extends undefined ? never : K) : K]: ReadType<T[K]> }
 		& UnionToIntersection<Exclude<{
 			[K in keyof T]: T[K] extends { new (...args: any): any } ? never : T[K] extends { get: (...args: any) => infer R } ? (R extends MergeType<infer U> ? U : never) : never
 		}[keyof T], never>>
@@ -134,20 +135,23 @@ export function read_more<T extends TypeReader, O extends Record<string, any>>(s
 }
 
 export function write(s: _stream, type: TypeWriter, value: any) : void {
-	if (isWriter(type))
+	if (isWriter(type)) {
 		type.put(s, value);
-	else
-		Object.entries(type).map(([k, t]) => write(s, t, value[k]));
+		return;
+	}
+	s.obj = value;
+	Object.entries(type).map(([k, t]) => write(s, t, value[k]));
 }
 
 export function readx<T extends object | number | string | boolean>(s: _stream, type: TypeX<T>): T {
-	return typeof type === 'function' ? type(s)
-		:	isReader(type) ?	type.get(s)
+	return typeof type === 'function'	? type(s)
+		:	isReader(type)				? type.get(s)
 		:	type;
 }
-export function writex<T extends object | number | string>(s: _stream, type: TypeX<T>, value: T) {
-	if (isWriter(type))
-		type.put(s, value);
+export function writex<T extends object | number | string>(s: _stream, type: TypeX<T>, value: T): T {
+	return typeof type === 'function'	? type(s)
+		:	isWriter(type)				? (type.put(s, value), value)
+		:	type;
 }
 
 //-----------------------------------------------------------------------------
@@ -214,6 +218,7 @@ export class growingStream extends stream {
 			const newBuffer = new ArrayBuffer(this.buffer.byteLength * 2);
 			new Uint8Array(newBuffer).set(new Uint8Array(this.buffer));
 			this.buffer	= newBuffer;
+			this.end	= this.buffer.byteLength;
 			this.offset	-= this.offset0;
 			this.offset0 = 0;
 		}
@@ -498,7 +503,8 @@ export const ULEB128: TypeT<number|bigint> = {
 //-----------------------------------------------------------------------------
 
 export function StringType(len: TypeX<number>, encoding: utils.TextEncoding = 'utf8', zeroTerminated = false, lenScale?: number): TypeT<string> {
-	const lenScale2 = lenScale ?? (encoding == 'utf8' ? 1 : 2);
+	const rawScale = encoding == 'utf8' ? 1 : 2;
+	const lenScale2 = lenScale ?? rawScale;
 	return {
 		get(s: _stream) 	{
 			const len2	= readx(s, len);
@@ -509,8 +515,8 @@ export function StringType(len: TypeX<number>, encoding: utils.TextEncoding = 'u
 		put(s: _stream, v: string) {
 			if (zeroTerminated)
 				v += '\0';
-			writex(s, len, v.length * 2 / lenScale2);
-			utils.encodeTextInto(v, s.read_buffer(v.length * lenScale2), encoding);
+			const len2 = writex(s, len, v.length * rawScale / lenScale2);
+			utils.encodeTextInto(v, s.view(Uint8Array, len2 * lenScale2), encoding);
 		}
 	};
 }
@@ -669,6 +675,20 @@ export function DontRead<T>(): TypeT<T|undefined> {
 	};
 }
 
+export function Const<T>(t: T): TypeT<T> {
+	return {
+		get(_s: _stream)			{ return t; },
+		put(_s: _stream, _v: any)	{}
+	};
+}
+
+export function Expect<T extends Type>(type: T, t: ReadType<T>): TypeT<undefined> {
+	return {
+		get(s: _stream)	{ const x = read(s, type); if (x !== t) throw new Error(`Expected ${t}, got ${x}`); return undefined; },
+		put(s: _stream)	{ write(s, type, t); }
+	};
+}
+
 export function SizeType<T extends Type>(len: TypeX<number>, type: T): TypeT<ReadType<T>> {
 	return {
 		get(s: _stream) {
@@ -705,13 +725,6 @@ export function MaybeOffsetType<T extends Type>(offset: TypeX<number>, type: T):
 			}
 		},
 		put(_s: _stream) {}
-	};
-}
-
-export function Const<T>(t: T): TypeT<T> {
-	return {
-		get(_s: _stream)			{ return t; },
-		put(_s: _stream, _v: any)	{}
 	};
 }
 
@@ -759,10 +772,35 @@ export function Optional<T extends Type, F extends Type | undefined = undefined>
 	};
 }
 
-export function Switch<T extends Record<string | number, Type>>(test: TypeX<string | number>, switches: T): TypeT<ReadType<T[keyof T]>> {
+export function Discriminator<T extends Record<string | number, Type>>(value: any, switches: T) {
+	if (typeof value === 'object') {
+		const keys = new Set(Object.keys(value));
+
+		let best: string | undefined;
+		let bestn = 0;
+		for (const k in switches) {
+			const n = Object.keys(switches[k]).reduce((acc, key) => acc + (keys.has(key) ? 1 : 0), 0);
+			if (n > bestn) {
+				bestn = n;
+				best = k;
+			}
+		}
+		return best;
+	}
+}
+
+export function Switch<T extends Record<string | number, Type>>(test: TypeX<string | number>, switches: T, discriminator = (value: any) => Discriminator(value, switches)): TypeT<ReadType<T[keyof T]>> {
 	return {
 		get(s: _stream)				{ const t = switches[readx(s, test)]; return (t && read(s, t)); },
-		put(_s: _stream, _v: T)		{}// writex(s, test, )}// write(s, switches[test(obj)], v); }
+		put(s: _stream, v: T)		{
+			if (discriminator) {
+				const t = discriminator(v);
+				if (t !== undefined) {
+					writex(s, test, t);
+					write(s, switches[t], v);
+				}
+			}
+		}
 	};
 }
 
@@ -923,8 +961,9 @@ export class MappedMemory {
 	static readonly	EXECUTE  	= 4;	// Execute permission
 	static readonly	RELATIVE	= 8;	// address is relative to dll base
 
-	constructor(public data: Uint8Array, public address: number, public flags: number) {}
+	constructor(public data: Uint8Array, public address: bigint, public flags: number) {}
 	resolveAddress(_base: number)		{ return this.address; }
-	slice(begin: number, end?: number)	{ return new MappedMemory(this.data.subarray(begin, end), this.address + begin, this.flags); }
-	at(begin: number, length?: number)	{ return this.slice(begin - this.address, length && (begin - this.address + length)); }
+	slice(begin: number, end?: number)	{ return new MappedMemory(this.data.subarray(begin, end), this.address + BigInt(begin), this.flags); }
+	atRelative(begin: number, length?: number)	{ return this.slice(begin, length && (begin + length)); }
+	at(begin: bigint, length?: number)	{ return this.atRelative(Number(begin - this.address), length); }
 }
