@@ -1,7 +1,8 @@
 import * as utils from './utils';
 export * as utils from './utils';
 
-export type View<T> = new(a: ArrayBufferLike, offset: number, length: number)=>T;
+interface ViewLike { readonly byteLength: number }
+export type View<T extends ViewLike> = (new(a: ArrayBufferLike, offset: number, length: number)=>T) & {BYTES_PER_ELEMENT?: number};
 
 export interface _stream {
 	be?: boolean;							// read numbers as bigendian/littleendian
@@ -13,7 +14,7 @@ export interface _stream {
 	skip(offset: number): void;				// move current offset from start of file
 	read_buffer(len: number): any;			// return buffer containing next len bytes, and move current offset
 	write_buffer(value: Uint8Array): void;	// write buffer contents at current offset, and move current offset
-	view<T>(type: View<T>, len: number): T;
+	view<T extends ViewLike>(type: View<T>, len: number): T;
 }
 
 export interface TypeReaderT<T> { get(s: _stream): T }
@@ -65,14 +66,16 @@ export function Class<T extends Type>(spec: T) {
 		static put(s: _stream, v: Class) {
 			write(s, spec, v);
 		}
-		constructor(s: _stream) {
-			return Object.assign(this, read(s, spec));
+		constructor(s: _stream | ReadType<T>) {
+			if ('tell' in s)
+				return Object.assign(this, read(s, spec));
+			return Object.assign(this, s);
 		}
 		write(s: _stream) 	{
 			write(s, spec, this);
 		}
-	} as (new(s: _stream) => ReadType<T> & { write(w: _stream): void }) & {
-		get:<X extends abstract new (...args: any) => any>(this: X, s: _stream) => InstanceType<X>,
+	} as (new(s: _stream | ReadType<T>) => ReadType<T> & { write(w: _stream): void }) & {
+		get:<X extends abstract new (...args: any[]) => any>(this: X, s: _stream) => InstanceType<X>,
 		put:(s: _stream, v: any) => void
 	};
 }
@@ -195,16 +198,15 @@ export class stream implements _stream {
 		return new Uint8Array(this.buffer, offset, this.offset - offset);
 	}
 	public write_buffer(v: Uint8Array) {
-		const dv = this.view(DataView, v.length);
-		let offset = 0;
-		for (const i of v)
-			dv.setUint8(offset++, v[i]);
+		const d = this.view(Uint8Array, v.length);
+		d.set(v);
 	}
-	public view<T>(type: View<T>, len: number): T {
-		if (this.offset + len > this.end)
+	public view<T extends ViewLike>(type: View<T>, len: number): T {
+		const byteLength = len * (type.BYTES_PER_ELEMENT ?? 1);
+		if (this.offset + byteLength > this.end)
 			throw new Error('stream: out of bounds');
 		const _t = new type(this.buffer, this.offset, len);
-		this.offset += len;
+		this.offset += _t.byteLength;
 		return _t;
 	}
 }
@@ -223,8 +225,8 @@ export class growingStream extends stream {
 			this.offset0 = 0;
 		}
 	}
-	public view<T>(type: View<T>, len: number): T {
-		this.checksize(len);
+	public view<T extends ViewLike>(type: View<T>, len: number): T {
+		this.checksize(len * (type.BYTES_PER_ELEMENT ?? 1));
 		return super.view(type, len);
 	}
 	public buffer_at(offset: number, len: number) {
@@ -272,7 +274,7 @@ function alignStream(s: _stream, align: number) {
 //-----------------------------------------------------------------------------
 //	dummy reader for calculating sizes
 //-----------------------------------------------------------------------------
-
+/*
 class dummy_dataview implements DataView {
 	readonly buffer!: ArrayBuffer;
 	readonly byteLength!: number;
@@ -302,7 +304,7 @@ class dummy_dataview implements DataView {
 	setBigInt64(_byteOffset: number, _value: bigint, _littleEndian?: boolean): void {}
 	setBigUint64(_byteOffset: number, _value: bigint, _littleEndian?: boolean): void {}
 }
-
+*/
 export class dummy implements _stream {
 	public offset = 0;
 	public remaining() 				{ return 0; }
@@ -311,10 +313,10 @@ export class dummy implements _stream {
 	public seek(offset: number) 	{ this.offset = offset; }
 	public skip(offset: number) 	{ this.offset += offset; }
 
-	public view<T>(type: View<T>, len: number): T {
-		const dv = new dummy_dataview(this.offset);
+	public view<T extends ViewLike>(type: View<T>, len: number): T {
+		const dv = new type(global.Buffer.alloc(len).buffer, 0, len);
 		this.offset += len;
-		return dv as T;
+		return dv;
 	}
 	public read_buffer(len: number) {
 		const offset = this.offset;
@@ -639,10 +641,11 @@ export const Remainder: TypeT<Uint8Array> = {
 	put:(s: _stream, v: Uint8Array)		=> s.write_buffer(v)
 };
 
-export function Buffer(len: TypeX<number>): TypeT<Uint8Array> {
+export function Buffer<T extends ArrayBufferView = Uint8Array>(len: TypeX<number>, view: View<T> = Uint8Array as any): TypeT<T> {
+	const bytesPerElement = view.prototype.BYTES_PER_ELEMENT || 1;
 	return {
-		get:(s: _stream)				=> s.read_buffer(readx(s, len)),
-		put:(s: _stream, v: Uint8Array)	=> { writex(s, len, v.length); s.write_buffer(v); }
+		get:(s: _stream)				=> { const buf = s.read_buffer(readx(s, len) * bytesPerElement); return new view(buf.buffer, buf.byteOffset, buf.byteLength / bytesPerElement); },
+		put:(s: _stream, v: T)			=> { writex(s, len, v.byteLength / bytesPerElement); s.write_buffer(new Uint8Array(v.buffer, v.byteOffset, v.byteLength)); }
 	};
 }
 
