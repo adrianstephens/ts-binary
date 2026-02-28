@@ -2,3 +2,5 @@ node_modules
 dist
 *.tgz
 *.tsbuildinfo
+tsconfig.tsbuildinfo
+*.tsbuildinfo  
