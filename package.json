@@ -9,6 +9,7 @@
 	"main": "dist/binary.js",
 	"files": [
 		"dist/**/*.{js,d.ts}",
+		"scripts/transform.ts",
 		"README.md"
 	],
 	"scripts": {

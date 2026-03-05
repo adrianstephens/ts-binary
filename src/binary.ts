@@ -1,15 +1,11 @@
 import * as utils from './utils';
 export * as utils from './utils';
+
 import * as async from './async';
+export * as async from './async';
 
-export interface ViewLike { readonly byteLength: number }
-export type View<T extends ViewLike> = (new(a: ArrayBufferLike, offset: number, length: number)=>T) & {BYTES_PER_ELEMENT?: number};
+import { after, MaybePromise, TypedArray, ViewMaker } from './utils';
 
-export function maybePromise<V, R>(v: V, then: (value: Awaited<V>) => R): V extends PromiseLike<any> ? Promise<R> : R {
-	return (v instanceof Promise ? v.then(then as (value: any) => R) : then(v as Awaited<V>)) as V extends PromiseLike<any> ? Promise<R> : R;
-}
-
-type MaybePromise<T> = T | Promise<T>;
 type NoPromise<T> = T extends PromiseLike<infer R> ? R : T;
 
 //-----------------------------------------------------------------------------
@@ -17,102 +13,122 @@ type NoPromise<T> = T extends PromiseLike<infer R> ? R : T;
 //-----------------------------------------------------------------------------
 
 export interface _stream {
-	be?: boolean;							// read numbers as bigendian/littleendian
-	obj?: any;								// current object being read
-	remaining(): number;					// number of remaining bytes
-	remainder(): Uint8Array;						// buffer of remaining bytes
-	tell(): number;							// current offset from start of file
-	seek(offset: number): void;				// set current offset from start of file
-	skip(offset: number): void;				// move current offset from start of file
-	read_buffer(len: number): any;			// return buffer containing next len bytes, and move current offset
-	write_buffer(value: Uint8Array): void;	// write buffer contents at current offset, and move current offset
-	view<T extends ViewLike>(type: View<T>, len: number): T;
+	be?:			boolean;				// read numbers as bigendian/littleendian
+	obj?:			any;					// current object being read
+	atend?:			(s: _stream) => void;	// callback for when stream finished
+	remaining():	number;					// number of remaining bytes
+	remainder():	Uint8Array;				// buffer of remaining bytes
+	tell():			number;					// current offset from start of file
+	seek(offset: number):	void;			// set current offset from start of file
+	view<T>(type: ViewMaker<T>, len: number, strict?: boolean): T;
 }
 
+//compatibility stubs
+export function read_buffer(s: _stream, len: number) {
+	return s.view(Uint8Array, len);
+}
+export function write_buffer(s: _stream, buf: Uint8Array) {
+	s.view(Uint8Array, buf.length).set(buf);
+}
+export function skip(s: _stream|async._stream, len: number) {
+	s.seek(s.tell() + len);
+}
+export function buffer_at(s: _stream, offset: number, len?: number) {
+	const pos = s.tell();
+	s.seek(offset);
+	const result = len ? s.view(Uint8Array, len) : s.remainder();
+	s.seek(pos);
+	return result;
+}
 
-export class stream implements _stream {
-	protected buffer: ArrayBufferLike;
-	public offset0:	number;
-	public offset:	number;
-	public end:		number;
+export function offsetStream<S extends _stream|async._stream>(s: S, offset: number, size?: number): S {
+	const end	= size ?? s.remaining();
 
-	constructor(data: Uint8Array) {
-		this.buffer = data.buffer;
-		this.offset = this.offset0 = data.byteOffset;
-		this.end	= data.byteOffset + data.byteLength;
+	return {
+		be: s.be,
+
+		remaining() {
+			return end - this.tell();
+		},
+		remainder() {
+			return after(s.remainder(), b => b.subarray(0, this.remaining()));
+		},
+		tell() {
+			return s.tell() - offset;
+		},
+		seek(offset2: number) {
+			s.seek(offset2 + offset);
+		},
+		view<T>(type: ViewMaker<T>, len: number, strict?: boolean) {
+			return s.view(type, len, strict);
+		},
+	} as S;
+}
+
+export class BufferStream implements _stream {
+	be?:	boolean;
+	obj?:	any;
+	atend?: (s: _stream) => void;
+
+	protected offset	= 0;
+	protected end:		number;
+
+	constructor(public buffer: ArrayBufferLike) {
+		this.end	= buffer.byteLength;
 	}
-	public remaining() {
+	remaining() {
 		return this.end - this.offset;
 	}
-	public remainder() {
+	remainder() {
 		return new Uint8Array(this.buffer, this.offset);
 	}
-	public tell() {
-		return this.offset - this.offset0;
+	tell() {
+		return this.offset;
 	}
-	public seek(offset: number) {
-		this.offset = this.offset0 + offset;
-		return this;
+	seek(offset: number) {
+		this.offset = offset;
 	}
-	public skip(offset: number) {
-		this.offset += offset;
-		return this;
-	}
-	public buffer_at(offset: number, len?: number) {
-		return new Uint8Array(this.buffer, this.offset0 + offset, len ?? this.end - (this.offset0 + offset));
-	}
-	public read_buffer(len: number) {
+	view<T>(type: ViewMaker<T>, len: number, strict = true): T {
+		const bytesPerElement = type.BYTES_PER_ELEMENT || 1;
+		let byteLength = len * bytesPerElement;
+		if (this.offset + byteLength > this.end) {
+			if (strict)
+				throw new Error('stream: out of bounds');
+			len = Math.floor((this.end - this.offset) / bytesPerElement);
+			byteLength = len * bytesPerElement;
+		}
 		const offset = this.offset;
-		this.offset = Math.min(this.end, offset + len);
-		return new Uint8Array(this.buffer, offset, this.offset - offset);
-	}
-	public write_buffer(v: Uint8Array) {
-		const d = this.view(Uint8Array, v.length);
-		d.set(v);
-	}
-	public view<T extends ViewLike>(type: View<T>, len: number): T {
-		const byteLength = len * (type.BYTES_PER_ELEMENT ?? 1);
-		if (this.offset + byteLength > this.end)
-			throw new Error('stream: out of bounds');
-		const _t = new type(this.buffer, this.offset, len);
-		this.offset += _t.byteLength;
-		return _t;
+		this.offset += byteLength;
+		return new type(this.buffer, offset, len);
 	}
 }
 
-export class growingStream extends stream {
-	constructor(data?: Uint8Array) {
-		super(data ?? new Uint8Array(1024));
+export class stream extends BufferStream {
+	constructor(data: Uint8Array) {
+		super(data.buffer);
+		return offsetStream(this, data.byteOffset, data.byteLength) as any;
 	}
-	public checksize(len: number) {
+}
+
+export class growingStream extends BufferStream {
+	constructor() {
+		super(new ArrayBuffer(1024));
+	}
+	private checksize(len: number) {
 		if (this.offset + len > this.buffer.byteLength) {
-			const newBuffer = new ArrayBuffer(this.buffer.byteLength * 2);
-			new Uint8Array(newBuffer).set(new Uint8Array(this.buffer));
-			this.buffer	= newBuffer;
+			const buffer = new ArrayBuffer(Math.max(this.buffer.byteLength * 2, this.offset + len));
+			new Uint8Array(buffer).set(new Uint8Array(this.buffer));
+			this.buffer	= buffer;
 			this.end	= this.buffer.byteLength;
-			this.offset	-= this.offset0;
-			this.offset0 = 0;
 		}
 	}
-	public view<T extends ViewLike>(type: View<T>, len: number): T {
+	view<T>(type: ViewMaker<T>, len: number): T {
 		this.checksize(len * (type.BYTES_PER_ELEMENT ?? 1));
 		return super.view(type, len);
 	}
-	public buffer_at(offset: number, len: number) {
-		this.checksize(offset + len - this.offset);
-		return super.buffer_at(offset, len);
-	}
-	public read_buffer(len: number) {
-		this.checksize(len);
-		return super.read_buffer(len);
-	}
-	public write_buffer(v: Uint8Array) {
-		this.checksize(v.length);
-		super.write_buffer(v);
-	}
-
 	terminate() {
-		return new Uint8Array(this.buffer, this.offset0, this.offset - this.offset0);
+		this.atend?.(this);
+		return new Uint8Array(this.buffer, 0, this.offset);
 	}
 }
 
@@ -122,43 +138,20 @@ export class endianStream extends stream {
 	}
 }
 
-function clone<T extends object>(obj: T) : T {
-	return Object.assign(Object.create(Object.getPrototypeOf(obj)), obj);
-}
-
-export function offsetStream(s: _stream, offset: number, size?: number) {
-	const s2	= clone(s) as stream;
-	s2.offset	= s2.offset0 += offset;
-	if (size)
-		s2.end	= s2.offset + size;
-	return s2;
-}
-
-function alignStream(s: _stream, align: number) {
-	const offset = s.tell() % align;
-	if (offset)
-		s.skip(align - offset);
-}
-
 export class dummy implements _stream {
-	public offset = 0;
-	public remaining() 				{ return 0; }
-	public remainder() 				{ return new Uint8Array(0); }
-	public tell() 					{ return this.offset; }
-	public seek(offset: number) 	{ this.offset = offset; }
-	public skip(offset: number) 	{ this.offset += offset; }
+	offset = 0;
+	
+	remaining() 			{ return 0; }
+	remainder() 			{ return new Uint8Array(0); }
+	tell() 					{ return this.offset; }
+	seek(offset: number) 	{ this.offset = offset; }
 
-	public view<T extends ViewLike>(type: View<T>, len: number): T {
+	view<T>(type: ViewMaker<T>, len: number): T {
 		const dv = new type(global.Buffer.alloc(len).buffer, 0, len);
 		this.offset += len;
 		return dv;
 	}
-	public read_buffer(len: number) {
-		const offset = this.offset;
-		this.offset += len;
-		return offset;
-	}
-	public write_buffer(_v: Uint8Array)		{}
+	finish(): void {}
 }
 
 //-----------------------------------------------------------------------------
@@ -168,8 +161,6 @@ export class dummy implements _stream {
 export interface TypeReaderT<T> { get(s: _stream): T }
 export interface TypeWriterT<T> { put(s: _stream, v: T): void }
 export type TypeT<T>	= TypeReaderT<T> & TypeWriterT<T>;
-export type TypeX0<T>	= ((s: _stream)=>T) | T
-export type TypeX<T>	= TypeT<T> | TypeX0<T>;
 
 export type TypeReader	= TypeReaderT<any> | { [key: string]: TypeReader; } | TypeReaderT<any>[]
 export type TypeWriter	= TypeWriterT<any> | { [key: string]: TypeWriter; } | TypeWriterT<any>[]
@@ -195,6 +186,13 @@ export type ReadType<T> = T extends {new (s: infer _S extends _stream): infer R}
 	)
 	: never;
 
+export interface WithStaticGet {
+	get:<X extends abstract new (...args: any) => any>(this: X, s: _stream) => InstanceType<X>
+}
+export interface WithStaticPut {
+	put:(s: _stream, v: any) => void
+}
+
 export function ReadClass<T extends TypeReader>(spec: T) {
 	return class {
 		static get(s: _stream) {
@@ -203,9 +201,7 @@ export function ReadClass<T extends TypeReader>(spec: T) {
 		constructor(s: _stream) {
 			return Object.assign(this, read(s, spec));
 		}
-	} as (new(s: _stream) => ReadType<T>) & {
-		get:<X extends abstract new (...args: any) => any>(this: X, s: _stream) => InstanceType<X>,
-	};
+	} as (new(s: _stream) => ReadType<T>) & WithStaticGet;
 }
 
 export function Class<T extends Type>(spec: T) {
@@ -224,38 +220,43 @@ export function Class<T extends Type>(spec: T) {
 		write(s: _stream) 	{
 			write(s, spec, this);
 		}
-	} as (new(s: _stream | ReadType<T>) => ReadType<T> & { write(w: _stream): void }) & {
-		get:<X extends abstract new (...args: any[]) => any>(this: X, s: _stream) => InstanceType<X>,
-		put:(s: _stream, v: any) => void
-	};
+	} as (new(s: _stream | ReadType<T>) => ReadType<T> & { write(w: _stream): void }) & WithStaticGet & WithStaticPut;
 }
 
-export function Extend<B extends abstract new (...args: any[]) => any, T extends Type>(base: B, spec: T) {
-	abstract class X extends base {
-		//static get(s: _stream) {
-		//	return new this(s);
-		//}
-		static put(s: _stream, v: X) {
+export function Extend<B extends (abstract new (...args: any[]) => any) & WithStaticPut, T extends Type>(base: B, spec: T) {
+	abstract class Class extends base {
+		static get(s: _stream) {
+			return new (this as any)(s);
+		}
+		static put(s: _stream, v: Class) {
+			base.put(s, v);
 			write(s, spec, v);//TBD
 		}
 		constructor(...args: any[]) {
-			const s: _stream = args[0];
-			const obj = s.obj;
 			super(...args);
-			this.obj = obj;
-			read(args[0], spec, this);
-			delete this.obj;
+			if ('tell' in args[0]) {
+				const s: _stream = args[0];
+				const obj = s.obj;
+				this.obj = obj;
+				read(s, spec, this);
+				delete this.obj;
+			}
+		}
+		write(s: _stream) 	{
+			super.write?.(s);
+			write(s, spec, this);
 		}
 	};
-	return X as unknown as (new(s: _stream) => InstanceType<B> & ReadType<T>) & {
-		get:<X extends abstract new (...args: any) => any>(this: X, s: _stream) => InstanceType<X>,
-		put:(s: _stream, v: any) => void
-	};
+	type BaseData = B extends new (data: infer D) => any ? D : never;
+	return Class as unknown as (new(s: _stream | (BaseData & ReadType<T>)) => InstanceType<B> & ReadType<T>) & WithStaticGet & WithStaticPut;
 }
 
 //-----------------------------------------------------------------------------
 // synchronous versions of read/write
 //-----------------------------------------------------------------------------
+
+export type TypeX0<T>	= ((s: _stream, value?: T)=>T) | T
+export type TypeX<T>	= TypeT<T> | TypeX0<T>;
 
 function isReader(type: any): type is TypeReaderT<any> {
 	return typeof type.get === 'function';
@@ -276,9 +277,9 @@ export function read<T extends TypeReader>(s: _stream, spec: T, obj?: any) : Rea
 	delete obj.obj;
 	return obj;
 }
-function read_merge<T extends TypeReader>(s: _stream, specs: T) {
-	Object.entries(specs).forEach(([k, v]) => s.obj[k] = isReader(v) ? v.get(s) : read(s, v as TypeReader));
-}
+//function read_merge<T extends TypeReader>(s: _stream, specs: T) {
+//	Object.entries(specs).forEach(([k, v]) => s.obj[k] = isReader(v) ? v.get(s) : read(s, v as TypeReader));
+//}
 
 export function read_more<T extends TypeReader, O extends Record<string, any>>(s: _stream, specs: T, obj: O) : ReadType<T> & O {
 	s.obj = obj;
@@ -307,16 +308,30 @@ export function writen(s: _stream, type: any, v: any) {
 		write(s, type, i);
 }
 
+export function readx<T extends object | number | string | boolean>(s: _stream, type: TypeX<T>) {
+	return typeof type === 'function'	? type(s)
+		:	isReader(type)				? type.get(s)
+		:	type;
+}
+export function writex<T extends object | number | string>(s: _stream, type: TypeX<T>, value: T) {
+	return typeof type === 'function'	? type(s, value)
+		:	isWriter(type)				? (type.put(s, value), value)
+		:	type;
+}
+
+export function getx<T extends object | number | string | boolean>(s: any, type: TypeX0<T>): T {
+	return typeof type === 'function'	? type(s)
+		:	type;
+}
+
 //-----------------------------------------------------------------------------
 // possibly async versions of read/write
 //-----------------------------------------------------------------------------
 
 type get2<T> = ((s: _stream) => T) & ((s: async._stream) => Promise<T>);
 type put2<T> = ((s: _stream, v: T) => void) & ((s: async._stream, v: T) => Promise<void>);
-export interface TypeReaderT2<T> { get: get2<T>; }
-export interface TypeWriterT2<T> { put: put2<T>; }
-export type TypeT2<T>	= TypeReaderT2<T> & TypeWriterT2<T>;
-export type TypeX2<T>	= TypeT2<T> | TypeX0<T>;
+export interface TypeT2<T>	{ get: get2<T>; put: put2<T>; }
+export type TypeX2<T>	= TypeT2<T> | TypeT<T> | TypeX0<T>;// | async.TypeX0<T>;
 export type Type2		= Type | async.Type;
 
 export function read2<T extends TypeReader>(s: _stream, spec: T, obj?: any) : ReadType<T>;
@@ -324,14 +339,14 @@ export function read2<T extends async.TypeReader>(s: async._stream, spec: T, obj
 export function read2<T extends TypeReader|async.TypeReader>(s: _stream|async._stream, spec: T, obj?: any) : MaybePromise<ReadType<T>>;
 export function read2<T extends TypeReader|async.TypeReader>(s: any, spec: T, obj?: any) : MaybePromise<ReadType<T>> {
 	if (isReader(spec))
-		return maybePromise(spec.get(s), value => value);
+		return after(spec.get(s), value => value);
 
 	if (!obj)
 		obj = {obj: s.obj} as any;
 	s.obj	= obj;
 
-    return maybePromise(Object.entries(spec).reduce((acc: any, [k, t]) => 
-        maybePromise(acc, () => maybePromise(read2(s, t), value => obj[k] = value))
+    return after(Object.entries(spec).reduce((acc: any, [k, t]) => 
+        after(acc, () => after(read2(s, t), value => obj[k] = value))
     , undefined), () => {
 		s.obj	= obj.obj;
 		delete obj.obj;
@@ -341,7 +356,7 @@ export function read2<T extends TypeReader|async.TypeReader>(s: any, spec: T, ob
 
 function read_merge2<T extends Type2>(s: _stream|async._stream, specs: T): MaybePromise<void> {
 	return Object.entries(specs).reduce((acc: any, [k, v]) =>
-		maybePromise(acc, () => maybePromise(read2(s as any, v as any), value => s.obj[k] = value))
+		after(acc, () => after(read2(s as any, v as any), value => s.obj[k] = value))
 	, undefined);
 }
 
@@ -355,7 +370,7 @@ export function write2(s: any, type: TypeWriter|async.TypeWriter, value: any) : 
 	}
 	s.obj = value;
     return Object.entries(type).reduce((acc: any, [k, t]) => 
-        maybePromise(acc, () => write2(s, t, value[k]))
+        after(acc, () => write2(s, t, value[k]))
     , undefined);
 }
 
@@ -366,8 +381,8 @@ export function readn2<T extends TypeReader|async.TypeReader>(s: any, type: T, n
 	const result: ReadType<T>[] = [];
 	let acc: any = undefined;
 	for (let i = 0; i < n; i++)
-		acc = maybePromise(acc, () => maybePromise(read2(s, type), value => result.push(value)));
-	return maybePromise(acc, () => result);
+		acc = after(acc, () => after(read2(s, type), value => result.push(value)));
+	return after(acc, () => result);
 }
 
 export function writen2(s: _stream, type: TypeWriter, v: any): void;
@@ -375,34 +390,67 @@ export function writen2(s: async._stream, type: async.TypeWriter, v: any): Promi
 export function writen2(s: _stream|async._stream, type: TypeWriter|async.TypeWriter, v: any): MaybePromise<void>;
 export function writen2(s: any, type: any, v: any) {
     return v.reduce((acc: any, i: any) => 
-        maybePromise(acc, () => write2(s, type, i))
+        after(acc, () => write2(s, type, i))
     , undefined);
 }
 
-//-----------------------------------------------------------------------------
-// readx, writex - possibly async
-//-----------------------------------------------------------------------------
-
-export function readx<T extends object | number | string | boolean>(s: _stream, type: TypeX<T>): T;
-export function readx<T extends object | number | string | boolean>(s: async._stream, type: async.TypeX<T>): Promise<T>;
-export function readx<T extends object | number | string | boolean>(s: _stream | async._stream, type: TypeX2<T>): MaybePromise<T>;
-export function readx<T extends object | number | string | boolean>(s: any, type: TypeX2<T>) {
+export function readx2<T extends object | number | string | boolean>(s: _stream, type: TypeX<T>): T;
+export function readx2<T extends object | number | string | boolean>(s: async._stream, type: async.TypeX<T>): Promise<T>;
+export function readx2<T extends object | number | string | boolean>(s: _stream | async._stream, type: TypeX2<T>): MaybePromise<T>;
+export function readx2<T extends object | number | string | boolean>(s: any, type: TypeX2<T>) {
 	return typeof type === 'function'	? type(s)
 		:	isReader(type)				? type.get(s)
 		:	type;
 }
-export function writex<T extends object | number | string>(s: _stream, type: TypeX<T>, value: T) : T;
-export function writex<T extends object | number | string>(s: async._stream, type: async.TypeX<T>, value: T): Promise<T>;
-export function writex<T extends object | number | string>(s: _stream | async._stream, type: TypeX2<T>, value: T): MaybePromise<T>;
-export function writex<T extends object | number | string>(s: any, type: TypeX2<T>, value: T) {
-	return typeof type === 'function'	? type(s)
-		:	isWriter(type)				? maybePromise(type.put(s, value), () => value)
+export function writex2<T extends object | number | string>(s: _stream, type: TypeX<T>, value: T) : T;
+export function writex2<T extends object | number | string>(s: async._stream, type: async.TypeX<T>, value: T): Promise<T>;
+export function writex2<T extends object | number | string>(s: _stream | async._stream, type: TypeX2<T>, value: T): MaybePromise<T>;
+export function writex2<T extends object | number | string>(s: any, type: TypeX2<T>, value: T) {
+	return typeof type === 'function'	? type(s, value)
+		:	isWriter(type)				? after(type.put(s, value), () => value)
 		:	type;
 }
 
-export function getx<T extends object | number | string | boolean>(s: any, type: TypeX0<T>): T {
-	return typeof type === 'function'	? type(s)
-		:	type;
+//-----------------------------------------------------------------------------
+//	non-reading types (don't need async)
+//-----------------------------------------------------------------------------
+
+export interface TypeT0<T> {
+	get(s: _stream|async._stream): T;
+	put(s: _stream|async._stream, v: T): void;
+}
+
+export function SkipType(len: number): TypeT0<void> {
+	return {
+		get: s => skip(s, len),
+		put: s => skip(s, len)
+	};
+}
+
+export function AlignType(align: number): TypeT0<void> {
+	function alignStream(s: _stream|async._stream) {
+		const offset = s.tell() % align;
+		if (offset)
+			skip(s, align - offset);
+	}
+	return {
+		get: s => alignStream(s),
+		put: s => alignStream(s)
+	};
+}
+
+export function DontRead<T>(): TypeT0<T|undefined> {
+	return {
+		get: _s => undefined,
+		put: _s => undefined
+	};
+}
+
+export function Const<T>(t: T): TypeT0<T> {
+	return {
+		get: _s => t,
+		put: (_s, _v) => undefined
+	};
 }
 
 //-----------------------------------------------------------------------------
@@ -431,22 +479,22 @@ function endian<T extends number | bigint>(type: (be?: boolean)=>TypeT2<T>, be?:
 
 //8 bit
 export const UINT8: TypeT2<number> = {
-	get: ((s => maybePromise(s.view(DataView, 1), dv => dv.getUint8(0))) as get2<number>),
-	put: ((s, v) => maybePromise(s.view(DataView, 1), dv => dv.setUint8(0, v))) as put2<number>,
+	get: ((s => after(s.view(DataView, 1), dv => dv.getUint8(0))) as get2<number>),
+	put: ((s, v) => after(s.view(DataView, 1), dv => dv.setUint8(0, v))) as put2<number>,
 };
 export const INT8: TypeT2<number> = {
-	get: ((s => maybePromise(s.view(DataView, 1), dv => dv.getInt8(0))) as get2<number>),
-	put: ((s, v) => maybePromise(s.view(DataView, 1), dv => dv.setInt8(0, v))) as put2<number>,
+	get: ((s => after(s.view(DataView, 1), dv => dv.getInt8(0))) as get2<number>),
+	put: ((s, v) => after(s.view(DataView, 1), dv => dv.setInt8(0, v))) as put2<number>,
 };
 
 //16 bit
 function _UINT16(be?: boolean): TypeT2<number> { return {
-	get: ((s => maybePromise(s.view(DataView, 2), dv => dv.getUint16(0, !be))) as get2<number>),
-	put: ((s, v) => maybePromise(s.view(DataView, 2), dv => dv.setUint16(0, v, !be))) as put2<number>,
+	get: ((s => after(s.view(DataView, 2), dv => dv.getUint16(0, !be))) as get2<number>),
+	put: ((s, v) => after(s.view(DataView, 2), dv => dv.setUint16(0, v, !be))) as put2<number>,
 };};
 function _INT16(be?: boolean): TypeT2<number> { return {
-	get: ((s => maybePromise(s.view(DataView, 2), dv => dv.getInt16(0, !be))) as get2<number>),
-	put: ((s, v) => maybePromise(s.view(DataView, 2), dv => dv.setInt16(0, v, !be))) as put2<number>,
+	get: ((s => after(s.view(DataView, 2), dv => dv.getInt16(0, !be))) as get2<number>),
+	put: ((s, v) => after(s.view(DataView, 2), dv => dv.setInt16(0, v, !be))) as put2<number>,
 };};
 export const UINT16_LE	= _UINT16(false);
 export const UINT16_BE	= _UINT16(true);
@@ -457,12 +505,12 @@ export const INT16		= endian_from_stream(_INT16);
 
 //32 bit
 function _UINT32(be?: boolean): TypeT2<number> { return {
-	get: ((s => maybePromise(s.view(DataView, 4), dv => dv.getUint32(0, !be))) as get2<number>),
-	put: ((s, v) => maybePromise(s.view(DataView, 4), dv => dv.setUint32(0, v, !be))) as put2<number>,
+	get: ((s => after(s.view(DataView, 4), dv => dv.getUint32(0, !be))) as get2<number>),
+	put: ((s, v) => after(s.view(DataView, 4), dv => dv.setUint32(0, v, !be))) as put2<number>,
 };};
 function _INT32(be?: boolean): TypeT2<number> { return {
-	get: ((s => maybePromise(s.view(DataView, 4), dv => dv.getInt32(0, !be))) as get2<number>),
-	put: ((s, v) => maybePromise(s.view(DataView, 4), dv => dv.setInt32(0, v, !be))) as put2<number>,
+	get: ((s => after(s.view(DataView, 4), dv => dv.getInt32(0, !be))) as get2<number>),
+	put: ((s, v) => after(s.view(DataView, 4), dv => dv.setInt32(0, v, !be))) as put2<number>,
 };};
 export const UINT32_LE	= _UINT32(false);
 export const UINT32_BE	= _UINT32(true);
@@ -473,12 +521,12 @@ export const INT32 		= endian_from_stream(_INT32);
 
 //64 bit 
 function _UINT64(be?: boolean): TypeT2<bigint> { return {
-	get: ((s => maybePromise(s.view(DataView, 8), dv => utils.getBigUint(dv, 8, !be))) as get2<bigint>),
-	put: ((s, v) => maybePromise(s.view(DataView, 8), dv => utils.putBigUint(dv, v, 8, !be))) as put2<bigint>,
+	get: ((s => after(s.view(DataView, 8), dv => utils.getBigUint(dv, 0, 8, !be))) as get2<bigint>),
+	put: ((s, v) => after(s.view(DataView, 8), dv => utils.putBigUint(dv, 0, v, 8, !be))) as put2<bigint>,
 };};
 function _INT64(be?: boolean): TypeT2<bigint> { return {
-	get: ((s => maybePromise(s.view(DataView, 8), dv => utils.getBigInt(dv, 8, !be))) as get2<bigint>),
-	put: ((s, v) => maybePromise(s.view(DataView, 8), dv => utils.putBigUint(dv, v, 8, !be))) as put2<bigint>,
+	get: ((s => after(s.view(DataView, 8), dv => utils.getBigInt(dv, 0, 8, !be))) as get2<bigint>),
+	put: ((s, v) => after(s.view(DataView, 8), dv => utils.putBigUint(dv, 0, v, 8, !be))) as put2<bigint>,
 };};
 
 export const UINT64_LE	= _UINT64(false);
@@ -496,13 +544,13 @@ export function UINT<T extends number>(bits: T, be?: boolean): TypeNumber2<T> {
 	return (bits === 8 ? UINT8
 		: bits > 56
 		? endian((be?: boolean) => ({
-			get: ((s => maybePromise(s.view(DataView, bits / 8), dv => utils.getBigUint(dv, bits / 8, !be))) as get2<bigint>),
-			put: ((s, v) => maybePromise(s.view(DataView, bits / 8), dv => utils.putBigUint(dv, v, bits / 8, !be))) as put2<bigint>
+			get: ((s => after(s.view(DataView, bits / 8), dv => utils.getBigUint(dv, 0, bits / 8, !be))) as get2<bigint>),
+			put: ((s, v) => after(s.view(DataView, bits / 8), dv => utils.putBigUint(dv, 0, v, bits / 8, !be))) as put2<bigint>
 		}), be)
 		: endian(bits == 16 ? _UINT16 : bits == 32 ? _UINT32 :
 		(be?: boolean) => ({
-			get: ((s => maybePromise(s.view(DataView, bits / 8), dv => utils.getUint(dv, bits / 8, !be))) as get2<number>),
-			put: ((s, v) => maybePromise(s.view(DataView, bits / 8), dv => utils.putUint(dv, v, bits / 8, !be))) as put2<number>
+			get: ((s => after(s.view(DataView, bits / 8), dv => utils.getUint(dv, 0, bits / 8, !be))) as get2<number>),
+			put: ((s, v) => after(s.view(DataView, bits / 8), dv => utils.putUint(dv, 0, v, bits / 8, !be))) as put2<number>
 		}), be)
 	 ) as TypeNumber2<T>;
 }
@@ -514,25 +562,25 @@ export function INT<T extends number>(bits: T, be?: boolean): TypeNumber2<T> {
 	return (bits === 8 ? UINT8
 		: bits > 56
 		? endian((be?: boolean) => ({
-			get: ((s => maybePromise(s.view(DataView, bits / 8), dv => utils.getBigInt(dv, bits / 8, !be))) as get2<bigint>),
-			put: ((s, v) => maybePromise(s.view(DataView, bits / 8), dv => utils.putBigUint(dv, v, bits / 8, !be))) as put2<bigint>
+			get: ((s => after(s.view(DataView, bits / 8), dv => utils.getBigInt(dv, 0, bits / 8, !be))) as get2<bigint>),
+			put: ((s, v) => after(s.view(DataView, bits / 8), dv => utils.putBigUint(dv, 0, v, bits / 8, !be))) as put2<bigint>
 		}), be)
 		: endian(bits == 16 ? _INT16 : bits == 32 ? _INT32 :
 		(be?: boolean) => ({
-			get: ((s => maybePromise(s.view(DataView, bits / 8), dv => utils.getInt(dv, bits / 8, !be))) as get2<number>),
-			put: ((s, v) => maybePromise(s.view(DataView, bits / 8), dv => utils.putUint(dv, v, bits / 8, !be))) as put2<number>
+			get: ((s => after(s.view(DataView, bits / 8), dv => utils.getInt(dv, 0, bits / 8, !be))) as get2<number>),
+			put: ((s, v) => after(s.view(DataView, bits / 8), dv => utils.putUint(dv, 0, v, bits / 8, !be))) as put2<number>
 		}), be)
 	) as TypeNumber2<T>;
 }
 
 //float
 function _Float32(be?: boolean): TypeT2<number> { return {
-	get: ((s => maybePromise(s.view(DataView, 4), dv => dv.getFloat32(0, !be))) as get2<number>),
-	put: ((s, v) => maybePromise(s.view(DataView, 4), dv => dv.setFloat32(0, v, !be))) as put2<number>
+	get: ((s => after(s.view(DataView, 4), dv => dv.getFloat32(0, !be))) as get2<number>),
+	put: ((s, v) => after(s.view(DataView, 4), dv => dv.setFloat32(0, v, !be))) as put2<number>
 };};
 function _Float64(be?: boolean): TypeT2<number> { return {
-	get: ((s => maybePromise(s.view(DataView, 8), dv => dv.getFloat64(0, !be))) as get2<number>),
-	put: ((s, v) => maybePromise(s.view(DataView, 8), dv => dv.setFloat64(0, v, !be))) as put2<number>
+	get: ((s => after(s.view(DataView, 8), dv => dv.getFloat64(0, !be))) as get2<number>),
+	put: ((s, v) => after(s.view(DataView, 8), dv => dv.setFloat64(0, v, !be))) as put2<number>
 };};
 export const Float32_LE = _Float32(false);
 export const Float32_BE = _Float32(true);
@@ -541,30 +589,39 @@ export const Float64_BE = _Float64(true);
 export const Float32	= endian_from_stream(_Float32);
 export const Float64	= endian_from_stream(_Float64);
 
+export function Float(mbits: number, ebits: number, ebias = (1 << (ebits - 1)) - 1, sbit = true, be?: boolean)	{
+	const F = utils.Float(mbits, ebits, ebias, sbit);
+	return as2(UINT(F.bits, be), x => +F.raw(x), y => F(y).raw as any);
+}
+
+export function FloatRaw(mbits: number, ebits: number, ebias = (1 << (ebits - 1)) - 1, sbit = true, be?: boolean)	{
+	const F = utils.Float(mbits, ebits, ebias, sbit);
+	return as2(UINT(F.bits, be), x => F.raw(x), y => y.raw as any);
+}
 
 //leb128
 export const ULEB128: TypeT2<number|bigint> = {
-	get: (s => maybePromise(s.remainder(), buffer => {
+	get: (s => after(s.view(Uint8Array, 16, false), buffer => {
 		let t = 0;
 		let	i = 0;
 		let b;
 		while ((b = buffer[i]) & 0x80 && i < 6)
 			t |= (b & 0x7f) << (i++ * 7);
 
+		t |= (b & 0x7f) << (i * 7);
 		if (!(b & 0x80)) {
-			s.skip(i + 1);
+			skip(s, i + 1 - 16);
 			return t;
 		}
 		let tn = BigInt(t);
 		while ((b = buffer[i]) & 0x80)
 			tn |= BigInt(b & 0x7f) << BigInt(i++ * 7);
 		tn |= BigInt(b) << BigInt(i * 7);
-		s.skip(i + 1);
+		skip(s, i + 1 - 16);
 		return tn;
 	})) as get2<number|bigint>,
 	put: ((s, v) => {
-		const n = utils.highestSetIndex(v) / 7 + 1;
-		const buffer = new Uint8Array(n);
+		const buffer = new Uint8Array(Math.floor(utils.highestSetIndex(v) / 7) + 1);
 		let i = 0;
 		if (typeof v === 'number') {
 			while (v > 127) {
@@ -578,7 +635,7 @@ export const ULEB128: TypeT2<number|bigint> = {
 			}
 		}
 		buffer[i++] = Number(v);
-		return s.write_buffer(buffer);
+		after(s.view(Uint8Array, buffer.length), v => v.set(buffer));
 	}) as put2<number|bigint>,
 };
 
@@ -590,35 +647,58 @@ export function StringType(len: TypeX2<number>, encoding: utils.TextEncoding = '
 	const rawScale = encoding == 'utf8' ? 1 : 2;
 	const lenScale2 = lenScale ?? rawScale;
 	return {
-		get: ((s => maybePromise(readx(s, len), len2 => maybePromise(s.read_buffer(len2 * lenScale2), buffer => {
-			const v = utils.decodeText(buffer, encoding);
-			const z = zeroTerminated ? v.indexOf('\0') : -1;
-			return z >= 0 ? v.substring(0, z) : v;
-		}))) as get2<string>),
+		get: ((s => after(readx2(s, len),
+			len2 => after(s.view(Uint8Array, len2 * lenScale2),
+			buff => {
+				const v = utils.decodeText(buff, encoding);
+				const z = zeroTerminated ? v.indexOf('\0') : -1;
+				return z >= 0 ? v.substring(0, z) : v;
+			})
+		)) as get2<string>),
 		put: ((s, v) => {
 			if (zeroTerminated)
 				v += '\0';
-			return maybePromise(writex(s, len, v.length * rawScale / lenScale2), len2 => maybePromise(s.view(Uint8Array, len2 * lenScale2), buffer => {
-				utils.encodeTextInto(v, buffer, encoding);
-			}));
+			return after(writex2(s, len, v.length * rawScale / lenScale2),
+				len2 => after(s.view(Uint8Array, len2 * lenScale2),
+				buff => utils.encodeTextInto(v, buff, encoding)
+			));
 		}) as put2<string>,
 	};
 }
 
+function find0(s: _stream|async._stream, view: ViewMaker<TypedArray<number>>) {
+	const tell = s.tell();
+
+	const chunk = (scanned: number, nextSize: number): any => after(
+		s.view(view, nextSize, false),
+		data => {
+			const nullIndex = data.indexOf(0, scanned);
+			s.seek(tell);
+			if (nullIndex >= 0)
+				return nullIndex + 1;
+			if (data.length < nextSize)
+				throw new Error('Null terminator not found');
+			return chunk(nextSize, nextSize * 2);
+		}
+	);
+	return chunk(0, 16);
+}
+
 export function NullTerminatedStringType(encoding: utils.TextEncoding = 'utf8'): TypeT2<string> {
-	return StringType(encoding === 'utf8'
-		? s => maybePromise(s.remainder(), r => r.indexOf(0) + 1)
-		: s => maybePromise(s.remainder(), r => new Uint16Array(r).indexOf(0) + 1)
-		, encoding, true, 1);
+	return StringType(
+		(s, v?: number) => v === undefined ? find0(s, encoding === 'utf8' ? Uint8Array : Uint16Array) : v,
+		encoding, true, 1
+	);
 };
 
 export function RemainingStringType(encoding: utils.TextEncoding = 'utf8', zeroTerminated = false): TypeT2<string> {
 	return {
-		get: (s => maybePromise(s.remainder(), r => utils.decodeText(r, encoding))) as get2<string>,
+		get: (s => after(s.remainder(), r => utils.decodeText(r, encoding))) as get2<string>,
 		put: ((s, v) => {
 			if (zeroTerminated)
 				v += '\0';
-			return maybePromise(s.remainder(), buffer => utils.encodeTextInto(v, buffer, encoding));
+			const encoded = utils.encodeText(v, encoding);
+			return after(s.view(Uint8Array, encoded.length), buffer => buffer.set(encoded));
 		}) as put2<string>,
 	};
 }
@@ -630,8 +710,8 @@ export function RemainingStringType(encoding: utils.TextEncoding = 'utf8', zeroT
 export function ArrayType<T extends Type2>(len: TypeX2<number>, type: T) {
 	type R = ReadType<T>[];
 	return {
-		get: ((s => maybePromise(readx(s, len), n => readn2(s, type, n))) as get2<R>) as get2<R>,
-		put: ((s, v) => { writex(s, len, v.length); writen2(s, type, v); }) as put2<R>
+		get: ((s => after(readx2(s, len), n => readn2(s, type, n))) as get2<R>) as get2<R>,
+		put: ((s, v) => after(writex2(s, len, v.length), () => writen2(s, type, v))) as put2<R>
 	} as TypeT2<R>;
 }
 
@@ -644,7 +724,7 @@ export function RemainingArrayType<T extends Type2>(type: T) {
 				if (!s.remaining())
 					return result;
 				try {
-					return maybePromise(read2(s, type), value => {
+					return after(read2(s, type), value => {
 						if (value === undefined)
 							return result;
 						result.push(value);
@@ -670,7 +750,7 @@ export const names = (names: string[])	=> (v: any, i: number) => names[i];
 export function arrayWithNames<T extends Type2>(type: T, func:(v: any, i: number)=>string) {
 	type R = [string, ReadType<T> extends Array<infer E> ? E : never][];
 	return {
-		get: (s => maybePromise(read2(s, type), array => withNames(array, func))) as get2<R>,
+		get: (s => after(read2(s, type), array => withNames(array, func))) as get2<R>,
 		put: ((s, v) => write2(s, type, v.map(([, v]) => v))) as put2<R>
 	} as TypeT2<R>;
 }
@@ -678,7 +758,7 @@ export function arrayWithNames<T extends Type2>(type: T, func:(v: any, i: number
 export function objectWithNames<T extends Type2>(type: T, func:(v: any, i: number)=>string) {
 	type R = Record<string, ReadType<T> extends Array<infer E> ? E : never>;
 	return {
-		get: (s => maybePromise(read2(s, type), array => Object.fromEntries(withNames(array, func)))) as get2<R>,
+		get: (s => after(read2(s, type), array => Object.fromEntries(withNames(array, func)))) as get2<R>,
 		put: ((s, v) => write2(s, type, Object.values(v))) as put2<R>
 	} as TypeT2<R>;
 }
@@ -694,9 +774,9 @@ export function Struct<T extends Type2>(spec: T): TypeT2<ReadType<T>> {
 	};
 }
 
-type SpecT<T> = TypeT<T> | {
-	[K in keyof T]: SpecT<T[K]>
-}
+//type SpecT<T> = TypeT<T> | {
+//	[K in keyof T]: SpecT<T[K]>
+//}
 type SpecT2<T> = TypeT2<T> | {
 	[K in keyof T]: SpecT2<T[K]>
 }
@@ -708,57 +788,32 @@ export function StructT<T>(spec: SpecT2<T>): TypeT2<T> {
 }
 
 export const Remainder: TypeT2<Uint8Array> = {
-	get:(s => maybePromise(s.remainder(), r => r)) as get2<Uint8Array>,
-	put:((s, v) => maybePromise(s.write_buffer(v), () => undefined)) as put2<Uint8Array>
+	get:(s => after(s.remainder(), r => r)) as get2<Uint8Array>,
+	put:((s, v) => after(s.view(Uint8Array, v.length), d => d.set(v))) as put2<Uint8Array>
 };
 
-export function Buffer<T extends ArrayBufferView = Uint8Array>(len: TypeX2<number>, view: View<T> = Uint8Array as any): TypeT2<T> {
-	const bytesPerElement = view.prototype.BYTES_PER_ELEMENT || 1;
+export function Buffer<T extends TypedArray = Uint8Array>(len: TypeX2<number>, view: ViewMaker<T> = Uint8Array as any): TypeT2<T> {
 	return {
-		get: (s => maybePromise(readx(s, len), n => maybePromise(s.read_buffer(n * bytesPerElement), buf => new view(buf.buffer, buf.byteOffset, buf.byteLength / bytesPerElement)))) as get2<T>,
-		put: ((s, v) => maybePromise(writex(s, len, v.byteLength / bytesPerElement), () => s.write_buffer(new Uint8Array(v.buffer, v.byteOffset, v.byteLength)))) as put2<T>
-	};
-}
-
-export function SkipType(len: number): TypeT2<void> {
-	return {
-		get: (s => maybePromise(s.skip(len), () => undefined)) as get2<void>,
-		put: (s => maybePromise(s.skip(len), () => undefined)) as put2<void>
-	};
-}
-
-export function AlignType(align: number): TypeT2<void> {
-
-	return {
-		get: (s => maybePromise(alignStream(s as any, align), () => undefined)) as get2<void>,
-		put: (s => maybePromise(alignStream(s as any, align), () => undefined)) as put2<void>
+		get: (s => after(readx2(s, len),
+			n	=> s.view(view, n),
+		)) as get2<T>,
+		put: ((s, v) => after(writex2(s, len, v.length),
+			()	=> after(s.view(view, v.length),
+			d	=> d.set(v)
+		))) as put2<T>
 	};
 }
 
 export function Discard(type: Type2): TypeT2<undefined> {
 	return {
-		get: (s => maybePromise(read2(s, type), () => undefined)) as get2<undefined>,
+		get: (s => after(read2(s, type), () => undefined)) as get2<undefined>,
 		put: ((_s, _v) => undefined) as put2<undefined>
-	};
-}
-
-export function DontRead<T>(): TypeT2<T|undefined> {
-	return {
-		get: (_s => undefined) as get2<T|undefined>,
-		put: ((_s, _v) => undefined) as put2<T|undefined>
-	};
-}
-
-export function Const<T>(t: T): TypeT2<T> {
-	return {
-		get: (_s => t) as get2<T>,
-		put: ((_s, _v) => undefined) as put2<T>
 	};
 }
 
 export function Expect<T extends Type2>(type: T, t: ReadType<T>): TypeT2<undefined> {
 	return {
-		get: (s => maybePromise(read2(s, type), x => {
+		get: (s => after(read2(s, type), x => {
 			if (x !== t)
 				throw new Error(`Expected ${t}, got ${x}`);
 			return undefined;
@@ -769,65 +824,107 @@ export function Expect<T extends Type2>(type: T, t: ReadType<T>): TypeT2<undefin
 
 export function SizeType<T extends Type2>(len: TypeX2<number>, type: T): TypeT2<ReadType<T>> {
 	return {
-		get: (s => maybePromise(readx(s, len), size => {
-			const s2	= clone(s as any) as stream;
-			s.skip(size);
-			s2.end		= s2.offset + size;
-			return read2(s2, type);
+		get: (s => after(readx2(s, len), size => {
+			const start = s.tell();
+			return after(read2(offsetStream(s, 0, size), type), r => {
+				s.seek(start);
+				return r;
+			});
 		})) as get2<ReadType<T>>,
-		put: ((_s, _v) => undefined) as put2<ReadType<T>>
+		put: ((s, v) => {
+			const offsetPos = s.tell();
+			return after(writex2(s, len, 0), () => {
+				const start = s.tell();
+				return after(write2(offsetStream(s, 0), type, v), () => {
+					const end = s.tell();
+					s.seek(offsetPos);
+					return after(writex2(s, len, end - start), () => s.seek(end));
+				});
+			});
+		}) as put2<ReadType<T>>
 	};
 }
 
 export function OffsetType<T extends Type2>(offset: TypeX2<number>, type: T): TypeT2<ReadType<T>> {
 	return {
-		get: (s => maybePromise(readx(s, offset), off => {
-			const s2	= clone(s as any) as stream;
-			s2.offset	= s2.offset0 += off;
-			return read2(s2, type);
+		get: (s => after(readx2(s, offset), off => {
+			const pos = s.tell();
+			return after(read2(offsetStream(s, off), type), r => {
+				s.seek(pos);
+				return r;
+			});
 		})) as get2<ReadType<T>>,
-		put: ((_s, _v) => undefined) as put2<ReadType<T>>
+
+		put: ((s, v) => {
+			const offsetPos = s.tell();
+			return after(writex2(s, offset, 0), () => {
+				const atend = s.atend;
+				s.atend = (s: any) => {
+					const start = s.tell();
+					return after(write2(offsetStream(s, 0), type, v), () => {
+						const end = s.tell();
+						s.seek(offsetPos);
+						return after(writex2(s, offset, start), () => {
+							s.seek(end);
+							atend?.(s);
+						});
+					});
+				};
+			});
+		}) as put2<ReadType<T>>
 	};
 }
 
 export function MaybeOffsetType<T extends Type2>(offset: TypeX2<number>, type: T): TypeT2<ReadType<T> | undefined> {
 	return {
-		get: (s => maybePromise(readx(s, offset), off => {
+		get: (s => after(readx2(s, offset), off => {
 			if (off) {
-				const s2	= clone(s as any) as stream;
-				s2.offset	= s2.offset0 += off;
-				return read2(s2, type);
+				const pos = s.tell();
+				return after(read2(offsetStream(s, off), type), r => {
+					s.seek(pos);
+					return r;
+				});
 			}
 		})) as get2<ReadType<T> | undefined>,
-		put: ((_s, _v) => undefined) as put2<ReadType<T> | undefined>
+
+		put: ((s, v) => {
+			if (v === undefined)
+				return undefined;
+			const offsetPos = s.tell();
+			return after(writex2(s, offset, 0), () => {
+				const atend = s.atend;
+				s.atend = () => {
+					const start = s.tell();
+					return after(write2(offsetStream(s, 0), type, v), () => {
+						const end = s.tell();
+						s.seek(offsetPos);
+						return after(writex2(s, offset, start), () => {
+							s.seek(end);
+							atend?.(s as any);
+						});
+					});
+				};
+			});
+		}) as put2<ReadType<T> | undefined>
 	};
 }
 
-export function Func<T>(func: (s: _stream|async._stream)=>MaybePromise<T>): TypeT2<T> {
+export function Func<T>(func: (s: _stream|async._stream, v?: T)=>MaybePromise<T>): TypeT2<T> {
 	return {
 		get: (s => func(s)) as get2<T>,
-		put: ((_s, _v) => undefined) as put2<T>
+		put: ((s, v) => func(s, v)) as put2<T>
 	};
 }
 
-export function FuncType<T extends Type2>(func: (s: _stream|async._stream)=>T): TypeT2<ReadType<T>> {
+export function FuncType<T extends Type2>(func: (s: _stream|async._stream, v?: T)=>MaybePromise<T>): TypeT2<ReadType<T>> {
 	return {
-		get: (s => maybePromise(func(s), t => read2(s, t))) as get2<ReadType<T>>,
-		put: ((_s, _v) => undefined) as put2<ReadType<T>>
+		get: (s => after(func(s), t=> read2(s, t))) as get2<ReadType<T>>,
+		put: ((s, v) => after(func(s), t => write2(s, t, v))) as put2<ReadType<T>>
 	};
 }
 
 function CountMatchingFields(keys: Set<string>, spec: any) {
 	return Object.keys(spec).reduce((acc, key) => acc + (keys.has(key) ? 1 : 0), 0);
-}
-
-//discriminator - determine which of several types value is based on which fields are present
-export function Discriminator<T extends Record<string | number, any>>(value: any, switches: T) {
-	if (typeof value === 'object') {
-		const keys = new Set(Object.keys(value));
-		const counts = Object.values(switches).map((spec: any) => CountMatchingFields(keys, spec));
-		return Object.keys(switches)[counts.reduce((best, n, i) => n > counts[best] ? i : best, 0)];
-	}
 }
 
 export function DiscriminatorBoolean<T, F>(value: any, true_type: T, false_type: F) {
@@ -846,7 +943,7 @@ export function DiscriminatorBoolean<T, F>(value: any, true_type: T, false_type:
 export function Optional<T extends Type2, F extends Type2 | undefined = undefined>(test: TypeX2<boolean | number>, type: T, false_type?: F, discriminator = (value: any) => DiscriminatorBoolean(value, type, false_type)) {
 	type R = F extends Type2 ? ReadType<T | F> : ReadType<T | undefined>;
 	return {
-		get: (s => maybePromise(readx(s, test), x => {
+		get: (s => after(readx2(s, test), x => {
 			if (x)
 				return read2(s, type) as MaybePromise<R>;
 			if (false_type)
@@ -858,16 +955,15 @@ export function Optional<T extends Type2, F extends Type2 | undefined = undefine
 				return write2(s, getx(s, test) ? type : false_type as Type2, v);
 			const t = discriminator(v);
 			if (t !== undefined)
-				return maybePromise(writex(s, test, t as any), () => write2(s, t ? type : false_type as Type2, v));
+				return after(writex2(s, test, t as any), () => write2(s, t ? type : false_type as Type2, v));
 		}) as put2<R>
 	};
 }
 
-
 export function If<T extends Type2, F extends Type2 | undefined = undefined>(test: TypeX2<boolean | number>, true_type: T, false_type?: F, discriminator = (value: any) => Discriminator(value, { true: true_type, false: false_type } as any)) {
 	type R = F extends Type2 ? ReadType<T | F> : ReadType<T | undefined>;
 	return {
-		get: (s => maybePromise(readx(s, test), x => maybePromise(
+		get: (s => after(readx2(s, test), x => after(
 			false_type ? read_merge2(s, x ? true_type : false_type) : x ? read_merge2(s, true_type) : undefined,
 			() => ({} as MergeType<R>)
 		))) as get2<MergeType<R>>,
@@ -876,15 +972,23 @@ export function If<T extends Type2, F extends Type2 | undefined = undefined>(tes
 				return write2(s, getx(s, test) ? true_type : false_type as Type2, v);
 			const t = discriminator(v);
 			if (t !== undefined)
-				return maybePromise(writex(s, test, t as any), () => write2(s, t ? true_type : false_type as Type2, v));
+				return after(writex2(s, test, t as any), () => write2(s, t ? true_type : false_type as Type2, v));
 		}) as put2<MergeType<R>>
 	};
+}
+
+export function Discriminator<T extends Record<string | number, any>>(value: any, switches: T) {
+	if (typeof value === 'object') {
+		const keys = new Set(Object.keys(value));
+		const counts = Object.values(switches).map((spec: any) => CountMatchingFields(keys, spec));
+		return Object.keys(switches)[counts.reduce((best, n, i) => n > counts[best] ? i : best, 0)];
+	}
 }
 
 export function Switch<K extends string | number, T extends Record<K, Type2>>(test: TypeX2<K>, switches: T, discriminator = (value: any) => Discriminator(value, switches as any)) {
 	type R = ReadType<T[keyof T]>;
 	return {
-		get: (s => maybePromise(readx(s, test), key => {
+		get: (s => after(readx2(s, test), key => {
 			const t = switches[key as keyof T];
 			return t && read2(s, t);
 		})) as get2<R>,
@@ -893,7 +997,7 @@ export function Switch<K extends string | number, T extends Record<K, Type2>>(te
 				return write2(s, switches[getx(s, test) as keyof T], v);
 			const t = discriminator(v);
 			if (t !== undefined)
-				return maybePromise(writex(s, test, t as any), () => write2(s, switches[t as keyof T], v));
+				return after(writex2(s, test, t as any), () => write2(s, switches[t as keyof T], v));
 		}) as put2<R>
 	} as TypeT2<R>;
 }
@@ -916,8 +1020,15 @@ function make<T, D, O>(maker: ClassOrFactory<T,D,O>, arg: T, opt?: O) {
 
 export function as<T extends Type2, D>(type: T, maker: ClassOrFactory<ReadType<T>, D, _stream|async._stream>) : TypeT2<D> {
 	return {
-		get: (s => maybePromise(read2(s, type), v => make(maker, v, s))) as get2<D>,
+		get: (s => after(read2(s, type), v => make(maker, v, s))) as get2<D>,
 		put: ((s, v) => write2(s, type, v)) as put2<D>
+	};
+}
+
+export function as2<T extends Type2, D>(type: T, to: (arg: ReadType<T>) => D, from: (arg: D) => ReadType<T>) : TypeT2<D> {
+	return {
+		get: (s => after(read2(s, type), v => to(v))) as get2<D>,
+		put: ((s, v) => write2(s, type, from(v))) as put2<D>
 	};
 }
 

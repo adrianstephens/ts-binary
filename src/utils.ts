@@ -1,3 +1,12 @@
+export type MaybePromise<T> = T | Promise<T>;
+
+type Bits32 = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32;
+type Bits52 = Bits32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52;
+type Bits56 = Bits52 | 53 | 54 | 55 | 56;
+
+export function after<V, R>(v: V, then: (value: Awaited<V>) => R): V extends PromiseLike<any> ? Promise<R> : R {
+	return (v instanceof Promise ? v.then(then as (value: any) => R) : then(v as Awaited<V>)) as V extends PromiseLike<any> ? Promise<R> : R;
+}
 
 //-----------------------------------------------------------------------------
 //	bit stuff
@@ -79,75 +88,73 @@ export function splitBinary(n : number | bigint, splits : number[]) {
 
 // get/put 1-7 byte integers from/to DataView (7 bytes will lose precision)
 
-export function getUint(dv: DataView, len: number, littleEndian?: boolean) {
+export function getUint(dv: DataView, offset: number, len: number, littleEndian?: boolean) {
 	let result = 0;
 	if (littleEndian) {
 		if (len & 1)
-			result = dv.getUint8(len & 6);
+			result = dv.getUint8(offset + (len & 6));
 		if (len & 2)
-			result = (result << 16) | dv.getUint16(len & 4, true);
+			result = (result << 16) | dv.getUint16(offset + (len & 4), true);
 		if (len & 4)
-			result = result * (2**32) + dv.getUint32(0, true);
+			result = result * (2**32) + dv.getUint32(offset, true);
 	} else {
 		if (len & 1)
-			result = dv.getUint8(0);
+			result = dv.getUint8(offset);
 		if (len & 2)
-			result = (result << 16) | dv.getUint16(len & 1);
+			result = (result << 16) | dv.getUint16(offset, false);
 		if (len & 4)
-			result = result * (2**32) + dv.getUint32(len & 3);
+			result = result * (2**32) + dv.getUint32(offset, false);
 	}
 	return result;
 }
 
-export function getInt(dv: DataView, len: number, littleEndian?: boolean) {
-	const v = getUint(dv, len, littleEndian);
+export function getInt(dv: DataView, offset: number, len: number, littleEndian?: boolean) {
+	const v = getUint(dv, offset, len, littleEndian);
 	const s = 1 << len * 8 - 1;
 	return v < s ? v : v - s - s;
 }
 
-export function putUint(dv: DataView, v: number, len: number, littleEndian?: boolean) {
+export function putUint(dv: DataView, offset: number, v: number, len: number, littleEndian?: boolean) {
 	if (littleEndian) {
 		if (len & 4) {
-			dv.setUint32(0, v & 0xffffffff, true);
+			dv.setUint32(offset, v & 0xffffffff, true);
 			v /= 2**32;
 		}
 		if (len & 2) {
-			dv.setUint16(len & 4, v & 0xffff, true);
+			dv.setUint16(offset + (len & 4), v & 0xffff, true);
 			v >>= 16;
 		}
 		if (len & 1)
-			dv.setUint8(len & 6, v & 0xff);
+			dv.setUint8(offset + (len & 6), v & 0xff);
 	} else {
 		if (len & 4) {
-			dv.setUint32(len & 3, v & 0xffffffff);
+			dv.setUint32(offset + (len & 3), v & 0xffffffff);
 			v /= 2**32;
 		}
 		if (len & 2) {
-			dv.setUint16(len & 1, v & 0xffff);
+			dv.setUint16(offset + (len & 1), v & 0xffff);
 			v >>= 16;
 		}
 		if (len & 1)
-			dv.setUint8(0, v & 0xff);
+			dv.setUint8(offset, v & 0xff);
 	}
 }
 
-export function getBigUint(dv: DataView, len: number, littleEndian?: boolean) {
+export function getBigUint(dv: DataView, offset: number, len: number, littleEndian?: boolean) {
 	let result = 0n;
 	if (littleEndian) {
-		let offset = len;
-		while (offset >= 4) {
-			offset -= 4;
-			result = (result << 32n) | BigInt(dv.getUint32(offset, true));
+		while (len >= 4) {
+			len -= 4;
+			result = (result << 32n) | BigInt(dv.getUint32(offset + len, true));
 		}
-		if (len & 2) {
-			offset -= 2;
-			result = (result << 16n) | BigInt(dv.getUint16(offset, true));
-		}
+		if (len & 2)
+			result = (result << 16n) | BigInt(dv.getUint16(offset + len - 2, true));
+
 		if (len & 1)
-			result = (result << 8n) | BigInt(dv.getUint8(--offset));
+			result = (result << 8n) | BigInt(dv.getUint8(offset));
 	} else {
-		let offset = 0;
-		while (offset + 4 <= len) {
+		const end = offset + len;
+		while (offset + 4 <= end) {
 			result = (result << 32n) | BigInt(dv.getUint32(offset));
 			offset += 4;
 		}
@@ -161,16 +168,16 @@ export function getBigUint(dv: DataView, len: number, littleEndian?: boolean) {
 	return result;
 }
 
-export function getBigInt(dv: DataView, len: number, littleEndian?: boolean) {
-	const v = getBigUint(dv, len, littleEndian);
+export function getBigInt(dv: DataView, offset: number, len: number, littleEndian?: boolean) {
+	const v = getBigUint(dv, offset, len, littleEndian);
 	const s = 1n << BigInt(len * 8 - 1);
 	return v < s ? v : v - s - s;
 }
 
-export function putBigUint(dv: DataView, v: bigint, len: number, littleEndian?: boolean) {
+export function putBigUint(dv: DataView, offset: number, v: bigint, len: number, littleEndian?: boolean) {
 	if (littleEndian) {
-		let offset = 0;
-		while (offset + 4 <= len) {
+		const end = offset + len;
+		while (offset + 4 <= end) {
 			dv.setUint32(offset, Number(v & 0xffffffffn), true);
 			v >>= 32n;
 			offset += 4;
@@ -183,143 +190,151 @@ export function putBigUint(dv: DataView, v: bigint, len: number, littleEndian?: 
 		if (len & 1)
 			dv.setUint8(offset, Number(v & 0xffn));
 	} else {
-		let offset = len;
-		while (offset >= 4) {
-			offset -= 4;
-			dv.setUint32(offset, Number(v & 0xffffffffn));
+		while (len >= 4) {
+			len -= 4;
+			dv.setUint32(offset + len, Number(v & 0xffffffffn));
 			v >>= 32n;
 		}
 		if (len & 2) {
-			offset -= 2;
-			dv.setUint16(offset, Number(v & 0xffffn));
+			dv.setUint16(offset + len - 2, Number(v & 0xffffn));
 			v >>= 16n;
 		}
 		if (len & 1)
-			dv.setUint8(--offset, Number(v & 0xffn));
+			dv.setUint8(offset, Number(v & 0xffn));
 	}
 }
 
 //-----------------------------------------------------------------------------
 //	float
 //-----------------------------------------------------------------------------
+type FloatRaw<M extends number>			= number extends M ? number | bigint : M extends Bits32 ? number : bigint;
+type FloatMantissa<M extends number>	= number extends M ? number | bigint : M extends Bits52 ? number : bigint;
+
+function FloatSplit<M extends number>(mbits: M, ebits: number, ebias = (1 << (ebits - 1)) - 1): (x: number | bigint) => {mantissa: FloatMantissa<M>, exp: number, sign: number} {
+	const emask = (1 << ebits) - 1;
+
+	if (mbits > 32) {
+		const mimp	= 1n << BigInt(mbits);
+		const mmask = mimp - 1n;
+		return (i: number|bigint) => {
+			const n		= BigInt(i);
+			const rest	= Number(n >> BigInt(mbits));
+			const exp	= rest & emask;
+			const mantissa = n & mmask + (exp ? mimp : 0n);
+			return {mantissa: (mbits > 52 ? mantissa : Number(mantissa)) as any, exp: exp - ebias, sign: rest >>> ebits};
+		};
+	} else {
+		const mimp	= 1 << mbits;
+		const mmask = mimp - 1;
+		return (i: number|bigint) => {
+			const n		= Number(i);
+			const rest	= n >> mbits;
+			const exp	= rest & emask;
+			return {mantissa: (n & mmask) + (exp ? mimp : 0) as any, exp: exp - ebias, sign: rest >>> ebits};
+		};
+	}
+}
+
+function FloatPack<M extends number>(mbits: M, ebits: number, ebias = (1 << (ebits - 1)) - 1): (mantissa: number|bigint, exponent: number, sign: number) => FloatRaw<M> {
+	if (mbits > 32) {
+		const mmask = (1n << BigInt(mbits)) - 1n;
+		return (mantissa: number|bigint, exponent: number, sign: number) =>
+			((BigInt((sign << ebits) | (exponent + ebias))) << BigInt(mbits) | (BigInt(mantissa) & mmask)) as FloatRaw<M>;
+	} else {
+		const mmask = (1 << mbits) - 1;
+		return (mantissa: number|bigint, exponent: number, sign: number) =>
+			((((sign << ebits) | (exponent + ebias)) << mbits) | (Number(mantissa) & mmask)) as FloatRaw<M>;
+	}
+}
+
+const splitN	= FloatSplit(52, 11);
+const packN		= FloatPack(52, 11);
 
 function splitNumber(f: number) {
 	const dv	= new DataView(new ArrayBuffer(8));
 	dv.setFloat64(0, f, true);
+	return splitN(dv.getBigUint64(0, true));
+/*
 	const bits0 = dv.getUint32(0, true);
 	const bits1 = dv.getUint32(4, true);
+	const exp	= ((bits1 >>> 20) & 0x7FF);
+
 	return {
-		mantissa:	(bits1 & 0xFFFFF) * Math.pow(2, 32) + bits0,
-		exp:		((bits1 >>> 20) & 0x7FF) - 1023,
+		mantissa:	(bits1 & 0xFFFFF) * Math.pow(2, 32) + bits0 + (exp ? Math.pow(2, 52) : 0),
+		exp:		exp - 1023,
 		sign:		bits1 >>> 31,
 	};
+*/
 }
 function makeNumber(mantissa: number, exp: number, sign = 0): number {
 	const dv	= new DataView(new ArrayBuffer(8));
-	dv.setUint32(0, mantissa >>> 0, true);
-	dv.setUint32(4, (sign << 31) | ((exp + 1023) << 20) | ((mantissa / Math.pow(2, 32)) & 0xFFFFF), true);
+	dv.setBigUint64(0, packN(mantissa, exp, sign), true);
+//	dv.setUint32(0, mantissa >>> 0, true);
+//	dv.setUint32(4, (sign << 31) | ((exp + 1023) << 20) | ((mantissa / Math.pow(2, 32)) & 0xFFFFF), true);
 	return dv.getFloat64(0, true);
 }
 
-interface FloatInstance<I extends number | bigint> {
-	i: I;
-	valueOf(): number;
-}
-interface FloatClass<I extends number | bigint> {
-	new(value: number): FloatInstance<I>;
-	new(mantissa: I, exponent: number, sign?: number): FloatInstance<I>;
-	from(i: I): FloatInstance<I>;
+export interface FloatInstance<R extends number | bigint, N extends number | bigint = R> {
+	raw: R;
+	parts():	{mantissa: N, exp: number, sign: number};
+	valueOf():	number;
+	toString(): string;
 }
 
-export function Float(mbits: 10, ebits: 5, exp_bias?: number): FloatClass<number>;
-export function Float(mbits: 24, ebits: 8, exp_bias?: number): FloatClass<number>;
-export function Float(mbits: 52, ebits: 11, exp_bias?: number): FloatClass<number>;
-export function Float(mbits: number, ebits: number, exp_bias?: number): FloatClass<number | bigint>;
-export function Float<I extends number | bigint = number>(mbits: number, ebits: number, exp_bias = (1 << (ebits - 1)) - 1): FloatClass<I> {
-	const useBigInt = mbits > 32;
-	const emask = (1 << ebits) - 1;
-	const mmask = useBigInt ? (1n << BigInt(mbits)) - 1n : (1 << mbits) - 1;
-	
-	const pack = useBigInt
-		? (mantissa: number|bigint, exponent: number, sign: number) =>
-			((BigInt((sign << ebits) | (exponent + exp_bias))) << BigInt(mbits) | (BigInt(mantissa) & mmask as bigint))
-		: (mantissa: number|bigint, exponent: number, sign: number) =>
-			(((sign << ebits) | (exponent + exp_bias)) << mbits) | (Number(mantissa) & mmask as number);
+interface Float<M extends number = number, R extends number | bigint = FloatRaw<M>, N extends number | bigint = FloatMantissa<M>> {
+	mbits: 		M;
+	ebits: 		number;
+	exp_bias:	number;
+	sbit: 		boolean;
+	bits: 		number;
+	(value: number):	FloatInstance<R, N>;
+	raw(i: R):			FloatInstance<R, N>;
+	parts(mantissa: N, exp: number, sign: number): FloatInstance<R, N>;
+}
 
-	const splitCommon = (mantissa: number | bigint, rest: number) => ({mantissa, exp: (rest & emask) - exp_bias, sign: rest >>> ebits});
-	const split = useBigInt
-		? (i: number|bigint) => {
-			const n		= BigInt(i);
-			return splitCommon(n & mmask as bigint, Number(n >> BigInt(mbits)));
-		}
-		: (i: number|bigint) => {
-			const n		= Number(i);
-			return splitCommon(n & mmask as number, n >> mbits);
-		};
+export function Float<M extends number>(mbits: M, ebits: number, ebias = (1 << (ebits - 1)) - 1, sbit = true): Float<M, FloatRaw<M>> {
+	type Instance = FloatInstance<number | bigint, number | bigint>;
 
-/*
+	const split	= FloatSplit(mbits, ebits, ebias);
+	const pack	= FloatPack(mbits, ebits, ebias);
+
 	const prototype = {
-		parts() {
-			return split(this.i);
+		parts(this: Instance) {
+			return split(this.raw);
 		},
-		valueOf() {
-			const {mantissa, exp, sign} = split(this.i);
+		valueOf(this: Instance) {
+			const {mantissa, exp, sign} = split(this.raw);
 			const m = mbits <= 52
 				? Number(mantissa) * Math.pow(2, 52 - mbits)
 				: Number(BigInt(mantissa) >> BigInt(mbits - 52));
 			return makeNumber(m, exp, sign);
 		},
-		toString() {
+		toString(this: Instance) {
 			return this.valueOf().toString();
 		},
 	};
-	const cons = function(this: any, x: number | I, exponent?: number, sign?: number) {
-		if (typeof exponent === 'undefined') {
-			const {mantissa, exp, sign: s} = splitNumber(x as number);
-			const m = mbits <= 52
-				? mantissa / Math.pow(2, 52 - mbits)
-				: BigInt(mantissa) << BigInt(mbits - 52);
-			this.i = pack(m as I, exp, s) as I;
-		} else {
-			this.i = pack(x as I, exponent, sign ?? 0) as I;
+
+	function raw(i: number|bigint) {
+		const obj = Object.create(prototype) as Instance;
+		obj.raw = i;
+		return obj;
+	}
+
+	return Object.assign(function(x: number ) {
+		const {mantissa, exp, sign: s} = splitNumber(x);
+		const m = mbits <= 52
+			? mantissa / Math.pow(2, 52 - mbits)
+			: BigInt(mantissa) << BigInt(mbits - 52);
+		return raw(pack(m, exp, s));
+	}, {
+		mbits,	ebits, exp_bias: ebias, sbit,
+		bits:	mbits + ebits + (sbit ? 1 : 0),
+		raw,
+		parts(mantissa: number|bigint, exp: number, sign: number) {
+			return raw(pack(mantissa, exp, sign));
 		}
-	};
-*/
-	return class F {
-		i: I;
-		
-		constructor(value: number);
-		constructor(mantissa: I, exponent: number, sign?: number);
-		constructor(x: I | number, exponent?: number, sign?: number) {
-			if (typeof exponent === 'undefined') {
-				const {mantissa, exp, sign: s} = splitNumber(x as number);
-				const m = mbits <= 52
-					? mantissa / Math.pow(2, 52 - mbits)
-					: BigInt(mantissa) << BigInt(mbits - 52);
-				this.i = pack(m as I, exp, s) as I;
-			} else {
-				this.i = pack(x as I, exponent, sign ?? 0) as I;
-			}
-		}
-		static from(i: I) {
-			const obj = Object.create(this.prototype) as F;
-			obj.i = i;
-			return obj;
-		}
-		parts() {
-			return split(this.i);
-		}
-		valueOf() {
-			const {mantissa, exp, sign} = split(this.i);
-			const m = mbits <= 52
-				? Number(mantissa) * Math.pow(2, 52 - mbits)
-				: Number(BigInt(mantissa) >> BigInt(mbits - 52));
-			return makeNumber(m, exp, sign);
-		}
-		toString() {
-			return this.valueOf().toString();
-		}
-	};//as FloatClass<I>;
+	}) as unknown as Float<M, FloatRaw<M>, FloatMantissa<M>>;
+
 }
 
 export const float8_e4m3 = Float(3, 4, 7);
@@ -332,6 +347,26 @@ export const float16 = Float(10, 5, 15);
 
 export const isLittleEndian = (new Uint8Array(new Uint16Array([0x1234]).buffer))[0] === 0x34;
 
+type ArrayCallback<A, R, T>	= (value: R, index: number, array: A) => T;
+type ArrayReduction<A, R>	= (prev: R, curr: R, index: number, array: A) => R;
+
+type ArrayMethod<R, F extends keyof Array<R>, A = ArrayLike<R>> = 
+	F extends 'every' | 'filter' | 'find' | 'findIndex' | 'forEach' | 'map' | 'some'
+	? (callback: ArrayCallback<A, R, any>, thisArg?: any) => any
+	: F extends 'reduce' | 'reduceRight'
+	? (callback: ArrayReduction<A, R>, initial?: R) => R
+	: F extends 'copyWithin' | 'sort' | 'reverse' | 'fill'
+	? MethodType<Array<R>[F], ArrayLike<R>>
+	: Array<R>[F];
+
+type MethodParams<M> = M extends (...args: infer P) => any ? P : never;
+type MethodReturn<M> = M extends (...args: any[]) => infer R ? R : never;
+type MethodType<M, R = MethodReturn<M>>	= (...args: MethodParams<M>) => R;
+
+function arrayFunc<R, F extends keyof Array<R>>(array: ArrayLike<R>, func: F, ...args: MethodParams<ArrayMethod<R, F>>): MethodReturn<ArrayMethod<R, F>> {
+	return (Array.prototype[func] as any).call(array, ...args);
+}
+
 export interface TypedArray<R = any> {
 	buffer:			ArrayBufferLike;
 	length:			number;
@@ -343,57 +378,26 @@ export interface TypedArray<R = any> {
 	subarray(begin: number, end?: number): TypedArray<R>;
 	set(array: ArrayLike<R>, offset?: number): void;
 
-	copyWithin:		MethodType<ArrayMethod<R, 'copyWithin'>, TypedArray<R>>
-	every:			MethodType<ArrayMethod<R, 'every'>>
-	fill:			MethodType<ArrayMethod<R, 'fill'>, TypedArray<R>>
-	filter:			MethodType<ArrayMethod<R, 'filter'>>
-	find:			MethodType<ArrayMethod<R, 'find'>>
-	findIndex:		MethodType<ArrayMethod<R, 'findIndex'>>
-	forEach:		MethodType<ArrayMethod<R, 'forEach'>>
-	indexOf:		MethodType<ArrayMethod<R, 'indexOf'>>
-	join:			MethodType<ArrayMethod<R, 'join'>>
-	lastIndexOf:	MethodType<ArrayMethod<R, 'lastIndexOf'>>
-	map:			MethodType<ArrayMethod<R, 'map'>>
-	reduce:			MethodType<ArrayMethod<R, 'reduce'>>
-	reduceRight:	MethodType<ArrayMethod<R, 'reduceRight'>>
-	reverse:		MethodType<ArrayMethod<R, 'reverse'>, TypedArray<R>>
-	some:			MethodType<ArrayMethod<R, 'some'>>
-	sort:			MethodType<ArrayMethod<R, 'sort'>, TypedArray<R>>
-	toString:		MethodType<ArrayMethod<R, 'toString'>>
+	copyWithin:		MethodType<ArrayMethod<R, 'copyWithin'>>;
+	every:			MethodType<ArrayMethod<R, 'every'>>;
+	fill:			MethodType<ArrayMethod<R, 'fill'>>;
+	filter:			MethodType<ArrayMethod<R, 'filter'>>;
+	find:			MethodType<ArrayMethod<R, 'find'>>;
+	findIndex:		MethodType<ArrayMethod<R, 'findIndex'>>;
+	forEach:		MethodType<ArrayMethod<R, 'forEach'>>;
+	indexOf:		MethodType<ArrayMethod<R, 'indexOf'>>;
+	join:			MethodType<ArrayMethod<R, 'join'>>;
+	lastIndexOf:	MethodType<ArrayMethod<R, 'lastIndexOf'>>;
+	map:			MethodType<ArrayMethod<R, 'map'>>;
+	reduce:			MethodType<ArrayMethod<R, 'reduce'>>;
+	reduceRight:	MethodType<ArrayMethod<R, 'reduceRight'>>;
+	reverse:		MethodType<ArrayMethod<R, 'reverse'>>;
+	some:			MethodType<ArrayMethod<R, 'some'>>;
+	sort:			MethodType<ArrayMethod<R, 'sort'>>;
+	toString:		MethodType<ArrayMethod<R, 'toString'>>;
 }
 
-export type TypedArrayConstructor<T extends TypedArray<R>, R>
-	= (new(a: ArrayBufferLike, offset?: number, length?: number)=>T)
-	& {BYTES_PER_ELEMENT?: number};
-
-type DataViewType = 'Uint16' | 'Uint32' | 'BigUint64' | 'Int16' | 'Int32' | 'BigInt64' | 'Float32' | 'Float64';
-type DataViewReturnType<T extends DataViewType> = T extends 'BigUint64' ? bigint : T extends 'BigInt64' ? bigint : number;
-
-const typedArrays: Record<DataViewType, TypedArrayConstructor<TypedArray, any>> = {
-	Uint16: 	Uint16Array,
-	Int16: 		Int16Array,
-	Uint32: 	Uint32Array,
-	Int32: 		Int32Array,
-	BigUint64: 	BigUint64Array,
-	BigInt64: 	BigInt64Array,
-	Float32: 	Float32Array,
-	Float64: 	Float64Array,
-} as const;
-
-type ArrayMethod<R, F extends keyof Array<R>> = 
-	F extends 'every' | 'filter' | 'find' | 'findIndex' | 'forEach' | 'map' | 'some'
-	? (predicate: (value: R, index: number, array: ArrayLike<R>) => any, thisArg?: any) => any
-	: F extends 'reduce' | 'reduceRight'
-	? (callbackfn: (prev: R, curr: R, index: number, array: ArrayLike<R>) => R, initial?: R) => R
-	: Array<R>[F];
-
-type MethodParams<M> = M extends (...args: infer P) => any ? P : never;
-type MethodReturn<M> = M extends (...args: any[]) => infer R ? R : never;
-type MethodType<M, R = MethodReturn<M>>	= (...args: MethodParams<M>) => R;
-
-function arrayFunc<R, F extends keyof Array<R>>(array: ArrayLike<R>, func: F, ...args: MethodParams<ArrayMethod<R, F>>): MethodReturn<ArrayMethod<R, F>> {
-	return (Array.prototype[func] as any).call(array, ...args);
-}
+export type ViewMaker<T> = (new(a: ArrayBufferLike, offset: number, length: number)=>T) & {BYTES_PER_ELEMENT?: number};
 
 interface TypedArrayBacking<R> {
 	byteLength : number;
@@ -402,33 +406,15 @@ interface TypedArrayBacking<R> {
 };
 type TypedArrayBackingFactory<R> = (buffer: ArrayBufferLike, byteOffset: number, length: number) => TypedArrayBacking<R>;
 
-function DataViewTypedArray<T extends DataViewType>(type: T, be?: boolean) {
-	const BYTES_PER_ELEMENT	= typedArrays[type].BYTES_PER_ELEMENT ?? 1;
-	return TypedArray(
-		(buffer: ArrayBufferLike, byteOffset: number, length: number) => {
-			const byteLength = length * BYTES_PER_ELEMENT;
-			const dv = new DataView(buffer, byteOffset, byteLength);
-			const getter	= dv[`get${type}`].bind(dv) as (offset: number, littleEndian?: boolean) => DataViewReturnType<T>;
-			const setter	= dv[`set${type}`].bind(dv) as (offset: number, value: DataViewReturnType<T>, littleEndian?: boolean) => void;
-			return {
-				byteLength,
-				get: (index: number) => getter(index, !be),
-				set: (index: number, value: DataViewReturnType<T>) => setter(index, value, !be),
-			};
-		},
-		BYTES_PER_ELEMENT
-	);
-}
-
 function TypedArray<R>(backingFactory: TypedArrayBackingFactory<R>, BYTES_PER_ELEMENT: number) {
 	type THIS			= TypedArray<R>;
-	type Callback<T>	= (value: R, index: number, array: THIS) => T;
-	type Reduction		= (prev: R, curr: R, index: number, array: THIS) => R;
+	type Callback<T>	= ArrayCallback<THIS, R, T>;
+	type Reduction		= ArrayReduction<THIS, R>;
 
 	const proto = {
-		copyWithin(this: THIS, target: number, start: number, end?: number) { arrayFunc(this, 'copyWithin', target, start, end); return this; },
+		copyWithin(this: THIS, target: number, start: number, end?: number) { return arrayFunc(this, 'copyWithin', target, start, end); },
 		every(this: THIS, predicate: Callback<boolean>, thisArg?: any) 		{ return arrayFunc(this, 'every', predicate as any, thisArg); },
-		fill(this: THIS, value: R, start?: number, end?: number) 			{ arrayFunc(this, 'fill', value, start, end); return this;},
+		fill(this: THIS, value: R, start?: number, end?: number) 			{ return arrayFunc(this, 'fill', value, start, end); },
 		filter(this: THIS, predicate: Callback<boolean>, thisArg?: any) 	{ return arrayFunc(this, 'filter', predicate as any, thisArg); },
 		find(this: THIS, predicate: Callback<boolean>, thisArg?: any) 		{ return arrayFunc(this, 'find', predicate as any, thisArg); },
 		findIndex(this: THIS, predicate: Callback<boolean>, thisArg?: any)	{ return arrayFunc(this, 'findIndex', predicate as any, thisArg); },
@@ -439,9 +425,9 @@ function TypedArray<R>(backingFactory: TypedArrayBackingFactory<R>, BYTES_PER_EL
 		map(this: THIS, callback: Callback<R>, thisArg?: any) 				{ return arrayFunc(this, 'map', callback as any, thisArg); },
 		reduce(this: THIS, callback: Reduction, initial?: R)				{ return arrayFunc(this, 'reduce', callback as any, initial); },
 		reduceRight(this: THIS, callback: Reduction, initial?: R)			{ return arrayFunc(this, 'reduceRight', callback as any, initial); },
-		reverse(this: THIS) 												{ arrayFunc(this, 'reverse'); return this; },
+		reverse(this: THIS) 												{ return arrayFunc(this, 'reverse'); },
 		some(this: THIS, predicate: Callback<boolean>, thisArg?: any)		{ return arrayFunc(this, 'some', predicate as any, thisArg); },
-		sort(this: THIS, compare?: (a: R, b: R) => number) 					{ arrayFunc(this, 'sort', compare as any); return this; },
+		sort(this: THIS, compare?: (a: R, b: R) => number) 					{ return arrayFunc(this, 'sort', compare as any); },
 		toString(this: THIS) 												{ return arrayFunc(this, 'toString'); },
 	};
 
@@ -477,13 +463,11 @@ function TypedArray<R>(backingFactory: TypedArrayBackingFactory<R>, BYTES_PER_EL
 					return target[prop as keyof typeof target];
 
 				const index = Number(prop);
-				if (!isNaN(index) && index >= 0 && index < target.length)
-					return backing.get(index);
-				return undefined;
+				return !isNaN(index) && index >= 0 && index < length ? backing.get(index) : undefined;
 			},
-			set(target, prop, value: R) {
+			set(_target, prop, value: R) {
 				const index = Number(prop);
-				if (!isNaN(index) && index >= 0 && index < target.length) {
+				if (!isNaN(index) && index >= 0 && index < length) {
 					backing.set(index, value);
 					return true;
 				}
@@ -496,7 +480,39 @@ function TypedArray<R>(backingFactory: TypedArrayBackingFactory<R>, BYTES_PER_EL
 		return make(a, offset ?? 0, length ?? (a.byteLength - (offset ?? 0)) / BYTES_PER_ELEMENT);
 	}, {
 		BYTES_PER_ELEMENT
-	}) as any as TypedArrayConstructor<TypedArray<R>, R>;
+	}) as any as ViewMaker<TypedArray<R>>;
+}
+
+type DataViewType = 'Uint16' | 'Uint32' | 'BigUint64' | 'Int16' | 'Int32' | 'BigInt64' | 'Float32' | 'Float64';
+type DataViewReturnType<T extends DataViewType> = T extends 'BigUint64' ? bigint : T extends 'BigInt64' ? bigint : number;
+
+const typedArrays: Record<DataViewType, ViewMaker<TypedArray>> = {
+	Uint16: 	Uint16Array,
+	Int16: 		Int16Array,
+	Uint32: 	Uint32Array,
+	Int32: 		Int32Array,
+	BigUint64: 	BigUint64Array,
+	BigInt64: 	BigInt64Array,
+	Float32: 	Float32Array,
+	Float64: 	Float64Array,
+} as const;
+
+function DataViewTypedArray<T extends DataViewType>(type: T, be?: boolean) {
+	const BYTES_PER_ELEMENT	= typedArrays[type].BYTES_PER_ELEMENT ?? 1;
+	return TypedArray(
+		(buffer: ArrayBufferLike, byteOffset: number, length: number) => {
+			const byteLength = length * BYTES_PER_ELEMENT;
+			const dv = new DataView(buffer, byteOffset, byteLength);
+			const getter	= dv[`get${type}`].bind(dv) as (offset: number, littleEndian?: boolean) => DataViewReturnType<T>;
+			const setter	= dv[`set${type}`].bind(dv) as (offset: number, value: DataViewReturnType<T>, littleEndian?: boolean) => void;
+			return {
+				byteLength,
+				get: index => getter(index * BYTES_PER_ELEMENT, !be),
+				set: (index, value) => setter(index * BYTES_PER_ELEMENT, value, !be)
+			};
+		},
+		BYTES_PER_ELEMENT
+	);
 }
 
 export const Uint16beArray		= DataViewTypedArray('Uint16', true);		export type Uint16beArray		= InstanceType<typeof Uint16beArray>;
@@ -508,22 +524,66 @@ export const BigInt64beArray	= DataViewTypedArray('BigInt64', true);		export typ
 export const Float32beArray		= DataViewTypedArray('Float32', true);		export type Float32beArray		= InstanceType<typeof Float32beArray>;
 export const Float64beArray		= DataViewTypedArray('Float64', true);		export type Float64beArray		= InstanceType<typeof Float64beArray>;
 
-export const Float16Array		= TypedArray(
-	(buffer: ArrayBufferLike, byteOffset: number, length: number) => {
-		const dv = new DataView(buffer, byteOffset, length * 2);
-		return {
-			byteLength: length * 2,
-			get: (index: number) => float16.from(dv.getUint16(index * 2, true)),
-			set: (index: number, value: InstanceType<typeof float16>) => dv.setUint16(index * 2, value.i, true),
-		};
-	},
-2);
-export type Float16Array		= InstanceType<typeof Float16Array>;
-
 function as<T extends DataViewType>(arg: TypedArray, type: T, be?: boolean) {
 	const arrayType = be !== isLittleEndian ? typedArrays[type] : DataViewTypedArray(type, be);
 	return new arrayType(arg.buffer, arg.byteOffset, arg.byteLength / (typedArrays[type].BYTES_PER_ELEMENT ?? 1));
 }
+
+type NumberT<T extends number> = T extends Bits56 ? number : bigint;
+
+export function UintTypedArray<N extends number>(bits: N, be?: boolean) {
+	const bytes = (bits + 7) >> 3;
+	return TypedArray<bigint|number>((buffer: ArrayBufferLike, byteOffset: number, length: number) => {
+		const byteLength = length * bytes;
+		const dv = new DataView(buffer, byteOffset, byteLength);
+		return bytes > 7 ? {
+			byteLength,
+			get: index => getBigUint(dv, index * bytes, bytes, !be),
+			set: (index, value: bigint) => putBigUint(dv, index * bytes, value, bytes, !be)
+		} : {
+			byteLength,
+			get: index => getUint(dv, index * bytes, bytes, !be),
+			set: (index, value: number) => putUint(dv, index * bytes, value, bytes, !be)
+		};
+	}, bytes) as any as TypedArray<NumberT<N>>;
+}
+
+export function IntTypedArray<N extends number>(bits: N, be?: boolean) {
+	const bytes = (bits + 7) >> 3;
+	return TypedArray<bigint|number>((buffer: ArrayBufferLike, byteOffset: number, length: number) => {
+		const byteLength = length * bytes;
+		const dv = new DataView(buffer, byteOffset, byteLength);
+		return bytes > 7 ? {
+			byteLength,
+			get: index => getBigInt(dv, index * bytes, bytes, !be),
+			set: (index, value: bigint) => putBigUint(dv, index * bytes, value, bytes, !be)
+		} : {
+			byteLength,
+			get: index => getInt(dv, index * bytes, bytes, !be),
+			set: (index, value: number) => putUint(dv, index * bytes, value, bytes, !be)
+		};
+	}, bytes) as any as TypedArray<NumberT<N>>;
+}
+
+export function FloatTypedArray<M extends number>(F: Float<M>, be?: boolean) {
+	const bytes = (F.bits + 7) >> 3;
+	return TypedArray(
+		(buffer: ArrayBufferLike, byteOffset: number, length: number) => {
+			const byteLength = length * bytes;
+			const dv = new DataView(buffer, byteOffset, byteLength);
+			return F.mbits > 32 ? {
+				byteLength,
+				get: index => F.raw(getBigUint(dv, index * bytes, bytes, !be) as FloatRaw<M>),
+				set: (index, value) => putBigUint(dv, index * bytes, value.raw as bigint, bytes, !be)
+			} : {
+				byteLength,
+				get: index => F.raw(getUint(dv, index * bytes, bytes, !be) as FloatRaw<M>),
+				set: (index, value) => putUint(dv, index * bytes, value.raw as number, bytes, !be)
+			};
+		},
+	bytes);
+}
+
 
 // never copy, just reinterpret
 
@@ -676,11 +736,11 @@ export function encodeText(str: string, encoding: TextEncoding = 'utf8', bom = f
 	return buf;
 }
 
-export function encodeTextInto(str: string, into: Uint8Array, encoding: TextEncoding, bom = false) {
+export function encodeTextInto(str: string, into: TypedArray<number>, encoding: TextEncoding, bom = false) {
 	into.set(encodeText(str, encoding, bom));
 }
 
-export function decodeText(buf: Uint8Array, encoding: TextEncoding = 'utf8'): string {
+export function decodeText(buf: TypedArray<number>, encoding: TextEncoding = 'utf8'): string {
 	if (encoding === 'utf8')
 		return new TextDecoder('utf-8').decode(buf);
 	
@@ -692,11 +752,14 @@ export function decodeText(buf: Uint8Array, encoding: TextEncoding = 'utf8'): st
 	return result;
 }
 
-export function decodeTextTo0(buf: Uint8Array | undefined, encoding: TextEncoding = 'utf8'): string {
-	return buf ? decodeText(buf.subarray(0, encoding === 'utf8' ? buf.indexOf(0) : (new Uint16Array(buf.buffer, buf.byteOffset, buf.byteLength / 2)).indexOf(0) * 2), encoding) : '';
+export function decodeTextTo0(buf: TypedArray<number> | undefined, encoding: TextEncoding = 'utf8'): string {
+	return buf ? decodeText(buf.subarray(0,
+		encoding === 'utf8' ? buf.indexOf(0) : as16(buf).indexOf(0) * 2),
+		encoding
+	) : '';
 }
 
-export function getTextEncoding(bytes: Uint8Array): TextEncoding {
+export function getTextEncoding(bytes: ArrayLike<number>): TextEncoding {
 	return	bytes.length >= 3 && bytes[0] === 0xEF && bytes[1] === 0xBB && bytes[2] === 0xBF ?'utf8'
 		:	bytes.length >= 2 && bytes[0] === 0xFE && bytes[1] === 0xFF ? 'utf16be'
 		:	bytes.length >= 2 && bytes[0] === 0xFF && bytes[1] === 0xFE ? 'utf16le'
