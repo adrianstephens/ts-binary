@@ -707,15 +707,15 @@ export function RemainingStringType(encoding: utils.TextEncoding = 'utf8', zeroT
 //	array types
 //-----------------------------------------------------------------------------
 
-export function ArrayType<T extends Type2>(len: TypeX2<number>, type: T) {
+export function ArrayType<T extends Type2>(len: TypeX2<number>, type: T): TypeT2<ReadType<T>[]> {
 	type R = ReadType<T>[];
 	return {
 		get: ((s => after(readx2(s, len), n => readn2(s, type, n))) as get2<R>) as get2<R>,
 		put: ((s, v) => after(writex2(s, len, v.length), () => writen2(s, type, v))) as put2<R>
-	} as TypeT2<R>;
+	};
 }
 
-export function RemainingArrayType<T extends Type2>(type: T) {
+export function RemainingArrayType<T extends Type2>(type: T): TypeT2<ReadType<T>[]> {
 	type R = ReadType<T>[];
 	return {
 		get: (s => {
@@ -737,7 +737,7 @@ export function RemainingArrayType<T extends Type2>(type: T) {
 			return readNext();
 		}) as get2<R>,
 		put: ((s, v) => writen2(s, type, v)) as put2<R>
-	} as TypeT2<R>;
+	};
 }
 
 //-----------------------------------------------------------------------------
