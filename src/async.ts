@@ -5,8 +5,6 @@ export interface _stream {
 	be?:			boolean;				// read numbers as bigendian/littleendian
 	obj?:			any;					// current object being read
 	atend?:			(s: _stream) => void;	// callback for when stream finished
-	remaining():	number;					// number of remaining bytes
-	remainder():	Promise<Uint8Array>;	// buffer of remaining bytes
 	tell():			number;					// current offset from start of file
 	seek(offset: number): void;				// set current offset from start of file
 	view<T>(type: ViewMaker<T>, len: number, strict?: boolean): Promise<T>;
@@ -66,23 +64,14 @@ export class stream implements _stream {
 			this.flush_end	= 0;
 		}
 	}
-	remaining() {
-		return this.end - this.offset;
-	}
 	tell() {
 		return this.offset;
 	}
 	seek(offset: number) {
 		this.offset = offset;
 	}
-	async remainder() {
-		for (let size = 16;; size *= 2) {
-			await this.checksize(size, true);
-			if (this.remaining() < size)
-				return new Uint8Array(this.buffer, this.offset - this.buff_at, this.remaining());
-		}
-	}
-	async view<T>(type: ViewMaker<T>, len: number, strict = true): Promise<T> {
+
+	async view<T>(type: ViewMaker<T>, len: number, _strict = true): Promise<T> {
 		const byteLength = len * (type.BYTES_PER_ELEMENT ?? 1);
 		await this.checksize(byteLength, false);
 		const buff_offset = this.offset - this.buff_at;

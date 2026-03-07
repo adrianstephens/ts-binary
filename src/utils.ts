@@ -210,81 +210,131 @@ export function putBigUint(dv: DataView, offset: number, v: bigint, len: number,
 type FloatRaw<M extends number>			= number extends M ? number | bigint : M extends Bits32 ? number : bigint;
 type FloatMantissa<M extends number>	= number extends M ? number | bigint : M extends Bits52 ? number : bigint;
 
-function FloatSplit<M extends number>(mbits: M, ebits: number, ebias = (1 << (ebits - 1)) - 1): (x: number | bigint) => {mantissa: FloatMantissa<M>, exp: number, sign: number} {
-	const emask = (1 << ebits) - 1;
+class FloatParts<N extends number|bigint = number|bigint> {
+	constructor(public mantissa: N, public exp: number, public sign: number) {}
 
-	if (mbits > 32) {
-		const mimp	= 1n << BigInt(mbits);
-		const mmask = mimp - 1n;
-		return (i: number|bigint) => {
-			const n		= BigInt(i);
-			const rest	= Number(n >> BigInt(mbits));
-			const exp	= rest & emask;
-			const mantissa = n & mmask + (exp ? mimp : 0n);
-			return {mantissa: (mbits > 52 ? mantissa : Number(mantissa)) as any, exp: exp - ebias, sign: rest >>> ebits};
-		};
-	} else {
-		const mimp	= 1 << mbits;
-		const mmask = mimp - 1;
-		return (i: number|bigint) => {
-			const n		= Number(i);
-			const rest	= n >> mbits;
-			const exp	= rest & emask;
-			return {mantissa: (n & mmask) + (exp ? mimp : 0) as any, exp: exp - ebias, sign: rest >>> ebits};
-		};
+	selfAbs() { this.sign = 0; return this; }
+	selfNeg() { this.sign ^= 1; return this; }
+	static add(a: FloatParts, b: FloatParts) {
+		if (a.exp > b.exp)
+			[a, b] = [b,a];
+		if (b.exp === Infinity)
+			return b;
+		const am = BigInt(a.mantissa);
+		const bm = BigInt(b.mantissa) << BigInt(b.exp - a.exp);
+		return a.sign === b.sign
+			? new FloatParts(am + bm, a.exp, a.sign)
+			: am >= bm
+			? new FloatParts(am - bm, a.exp, a.sign)
+			: new FloatParts(bm - am, a.exp, b.sign);
 	}
+	static mul(a: FloatParts, b: FloatParts) {
+		return new FloatParts(BigInt(a.mantissa) * BigInt(b.mantissa), a.exp + b.exp, a.sign ^ b.sign);
+	}
+	static div(a: FloatParts, b: FloatParts, precision: number) {
+		return !b.mantissa
+			? new FloatParts(0, Infinity, a.sign ^ b.sign)
+			: new FloatParts((BigInt(a.mantissa) << BigInt(precision)) / BigInt(b.mantissa), a.exp - b.exp - precision, a.sign ^ b.sign);
+	}
+
+	static split<M extends number>(mbits: M, ebits: number, ebias = (1 << (ebits - 1)) - 1): (i: number | bigint) => FloatParts<FloatMantissa<M>> {
+		type MT = FloatMantissa<M>;
+		const emask = (1 << ebits) - 1;
+		ebias += mbits;
+
+		if (mbits > 32) {
+			const mimp	= 1n << BigInt(mbits);
+			return i => {
+				const n		= BigInt(i);
+				const rest	= Number(n >> BigInt(mbits));
+				const exp	= rest & emask;
+				const mantissa = (n & (mimp - 1n)) + (exp ? mimp : 0n);
+				return new FloatParts<MT>((mbits > 52 ? mantissa : Number(mantissa)) as MT, exp === emask ? Infinity : exp ? exp - ebias : 1 - ebias, rest >>> ebits);
+			};
+		} else {
+			const mimp	= 1 << mbits;
+			return i => {
+				const n		= Number(i);
+				const rest	= n >> mbits;
+				const exp	= rest & emask;
+				const mantissa = (n & (mimp - 1)) + (exp ? mimp : 0);
+				return new FloatParts<MT>(mantissa as MT, exp === emask ? Infinity : exp ? exp - ebias : 1 - ebias, rest >>> ebits);
+			};
+		}
+	}
+
+	static pack<M extends number>(mbits: M, ebits: number, ebias = (1 << (ebits - 1)) - 1): (mantissa: number|bigint, exponent: number, sign: number) => FloatRaw<M> {
+		const emask = (1 << ebits) - 1;
+		ebias += mbits;
+
+		if (mbits > 32) {
+			const mimp	= 1n << BigInt(mbits);
+			return (mantissa, exponent, sign) => {
+				let shift = highestSetIndex(mantissa) - mbits;
+				exponent += ebias + shift;
+				if (exponent >= emask) {
+					shift		= 0;
+					mantissa	= 0n;
+					exponent	= emask;
+				} else if (exponent <= 0) {
+					shift		-= exponent - 1;
+					exponent	= 0;
+				}
+				mantissa = shift < 0 ? BigInt(mantissa) << BigInt(-shift) : BigInt(mantissa) >> BigInt(shift);
+				return (BigInt((sign << ebits) | exponent) << BigInt(mbits) | (mantissa & (mimp - 1n))) as FloatRaw<M>;
+			};
+		} else {
+			const mimp	= 1 << mbits;
+			return (mantissa, exponent, sign) => {
+				let shift = highestSetIndex(mantissa) - mbits;
+				exponent += ebias + shift;
+				if (exponent >= emask) {
+					shift		= 0;
+					mantissa	= 0;
+					exponent	= emask;
+				} else if (exponent <= 0) {
+					shift		-= exponent - 1;
+					exponent	= 0;
+				}
+				mantissa = shift < 0 ? Number(mantissa) << -shift : Number(BigInt(mantissa) >> BigInt(shift));
+				return (((sign << ebits) | exponent) << mbits | (mantissa & (mimp - 1))) as FloatRaw<M>;
+			};
+		}
+	}
+
 }
 
-function FloatPack<M extends number>(mbits: M, ebits: number, ebias = (1 << (ebits - 1)) - 1): (mantissa: number|bigint, exponent: number, sign: number) => FloatRaw<M> {
-	if (mbits > 32) {
-		const mmask = (1n << BigInt(mbits)) - 1n;
-		return (mantissa: number|bigint, exponent: number, sign: number) =>
-			((BigInt((sign << ebits) | (exponent + ebias))) << BigInt(mbits) | (BigInt(mantissa) & mmask)) as FloatRaw<M>;
-	} else {
-		const mmask = (1 << mbits) - 1;
-		return (mantissa: number|bigint, exponent: number, sign: number) =>
-			((((sign << ebits) | (exponent + ebias)) << mbits) | (Number(mantissa) & mmask)) as FloatRaw<M>;
-	}
-}
-
-const splitN	= FloatSplit(52, 11);
-const packN		= FloatPack(52, 11);
+const splitN	= FloatParts.split(52, 11);
+const packN		= FloatParts.pack(52, 11);
 
 function splitNumber(f: number) {
 	const dv	= new DataView(new ArrayBuffer(8));
 	dv.setFloat64(0, f, true);
 	return splitN(dv.getBigUint64(0, true));
-/*
-	const bits0 = dv.getUint32(0, true);
-	const bits1 = dv.getUint32(4, true);
-	const exp	= ((bits1 >>> 20) & 0x7FF);
-
-	return {
-		mantissa:	(bits1 & 0xFFFFF) * Math.pow(2, 32) + bits0 + (exp ? Math.pow(2, 52) : 0),
-		exp:		exp - 1023,
-		sign:		bits1 >>> 31,
-	};
-*/
 }
-function makeNumber(mantissa: number, exp: number, sign = 0): number {
+function makeNumber(p: FloatParts): number {
 	const dv	= new DataView(new ArrayBuffer(8));
-	dv.setBigUint64(0, packN(mantissa, exp, sign), true);
-//	dv.setUint32(0, mantissa >>> 0, true);
-//	dv.setUint32(4, (sign << 31) | ((exp + 1023) << 20) | ((mantissa / Math.pow(2, 32)) & 0xFFFFF), true);
+	dv.setBigUint64(0, packN(p.mantissa, p.exp, p.sign), true);
 	return dv.getFloat64(0, true);
 }
 
 export interface FloatInstance<R extends number | bigint, N extends number | bigint = R> {
 	raw: R;
-	parts():	{mantissa: N, exp: number, sign: number};
+	parts():	FloatParts<N>;
 	valueOf():	number;
 	toString(): string;
+	abs():		this;
+	neg():		this;
+	add(b: this): this;
+	sub(b: this): this;
+	mul(b: this): this;
+	div(b: this): this;
 }
 
 interface Float<M extends number = number, R extends number | bigint = FloatRaw<M>, N extends number | bigint = FloatMantissa<M>> {
 	mbits: 		M;
 	ebits: 		number;
-	exp_bias:	number;
+	ebias:		number;
 	sbit: 		boolean;
 	bits: 		number;
 	(value: number):	FloatInstance<R, N>;
@@ -292,26 +342,28 @@ interface Float<M extends number = number, R extends number | bigint = FloatRaw<
 	parts(mantissa: N, exp: number, sign: number): FloatInstance<R, N>;
 }
 
-export function Float<M extends number>(mbits: M, ebits: number, ebias = (1 << (ebits - 1)) - 1, sbit = true): Float<M, FloatRaw<M>> {
+export function Float<M extends number>(mbits: M, ebits: number, ebias = (1 << (ebits - 1)) - 1, sbit = true): Float<M> {
 	type Instance = FloatInstance<number | bigint, number | bigint>;
 
-	const split	= FloatSplit(mbits, ebits, ebias);
-	const pack	= FloatPack(mbits, ebits, ebias);
+	const split	= FloatParts.split(mbits, ebits, ebias);
+	const pack	= FloatParts.pack(mbits, ebits, ebias);
 
 	const prototype = {
 		parts(this: Instance) {
 			return split(this.raw);
 		},
 		valueOf(this: Instance) {
-			const {mantissa, exp, sign} = split(this.raw);
-			const m = mbits <= 52
-				? Number(mantissa) * Math.pow(2, 52 - mbits)
-				: Number(BigInt(mantissa) >> BigInt(mbits - 52));
-			return makeNumber(m, exp, sign);
+			return makeNumber(split(this.raw));
 		},
 		toString(this: Instance) {
 			return this.valueOf().toString();
 		},
+		abs(this: Instance) 				{ return raw2(this.parts().selfAbs()); },
+		neg(this: Instance) 				{ return raw2(this.parts().selfNeg()); },
+		add(this: Instance, b: Instance)	{ return raw2(FloatParts.add(this.parts(), b.parts())); },
+		sub(this: Instance, b: Instance)	{ return raw2(FloatParts.add(this.parts(), b.parts().selfNeg())); },
+		mul(this: Instance, b: Instance)	{ return raw2(FloatParts.mul(this.parts(), b.parts())); },
+		div(this: Instance, b: Instance)	{ return raw2(FloatParts.div(this.parts(), b.parts(), mbits)); },
 	};
 
 	function raw(i: number|bigint) {
@@ -319,27 +371,26 @@ export function Float<M extends number>(mbits: M, ebits: number, ebias = (1 << (
 		obj.raw = i;
 		return obj;
 	}
+	const raw2	= (p: FloatParts) => raw(pack(p.mantissa, p.exp, p.sign));
 
 	return Object.assign(function(x: number ) {
-		const {mantissa, exp, sign: s} = splitNumber(x);
-		const m = mbits <= 52
-			? mantissa / Math.pow(2, 52 - mbits)
-			: BigInt(mantissa) << BigInt(mbits - 52);
-		return raw(pack(m, exp, s));
+		return raw2(splitNumber(x));
 	}, {
-		mbits,	ebits, exp_bias: ebias, sbit,
+		mbits,	ebits, ebias, sbit,
 		bits:	mbits + ebits + (sbit ? 1 : 0),
 		raw,
 		parts(mantissa: number|bigint, exp: number, sign: number) {
 			return raw(pack(mantissa, exp, sign));
 		}
-	}) as unknown as Float<M, FloatRaw<M>, FloatMantissa<M>>;
+	}) as unknown as Float<M>;
 
 }
 
 export const float8_e4m3 = Float(3, 4, 7);
 export const float8_e5m2 = Float(2, 5, 15);
 export const float16 = Float(10, 5, 15);
+export const float32 = Float(23, 8);
+export const float64 = Float(52, 11);
 
 //-----------------------------------------------------------------------------
 //	buffers
@@ -525,8 +576,9 @@ export const Float32beArray		= DataViewTypedArray('Float32', true);		export type
 export const Float64beArray		= DataViewTypedArray('Float64', true);		export type Float64beArray		= InstanceType<typeof Float64beArray>;
 
 function as<T extends DataViewType>(arg: TypedArray, type: T, be?: boolean) {
-	const arrayType = be !== isLittleEndian ? typedArrays[type] : DataViewTypedArray(type, be);
-	return new arrayType(arg.buffer, arg.byteOffset, arg.byteLength / (typedArrays[type].BYTES_PER_ELEMENT ?? 1));
+	const BYTES_PER_ELEMENT = typedArrays[type].BYTES_PER_ELEMENT ?? 1;
+	const arrayType = be !== isLittleEndian && arg.byteOffset % BYTES_PER_ELEMENT === 0 ? typedArrays[type] : DataViewTypedArray(type, be);
+	return new arrayType(arg.buffer, arg.byteOffset, Math.floor(arg.byteLength / BYTES_PER_ELEMENT));
 }
 
 type NumberT<T extends number> = T extends Bits56 ? number : bigint;

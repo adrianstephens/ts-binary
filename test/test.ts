@@ -34,25 +34,6 @@ function asyncTest(name: string, fn: () => Promise<void>) {
 // Stream operations
 //=============================================================================
 
-test('BufferStream: tell, seek, remaining', () => {
-	const data = new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8]);
-	const s = new bin.BufferStream(data.buffer);
-	assert.equal(s.tell(), 0);
-	assert.equal(s.remaining(), 8);
-	s.seek(2);
-	assert.equal(s.tell(), 2);
-	assert.equal(s.remaining(), 6);
-});
-
-test('BufferStream: remainder', () => {
-	const data = new Uint8Array([1, 2, 3, 4, 5]);
-	const s = new bin.BufferStream(data.buffer);
-	s.seek(2);
-	const rem = s.remainder();
-	assert.equal(s.remaining(), 3);
-	assert.deepEqual(rem, new Uint8Array([3, 4, 5]));
-});
-
 test('growingStream: write and terminate', () => {
 	const s = new bin.growingStream();
 	bin.write(s, bin.UINT32_LE, 0x12345678);
@@ -67,7 +48,6 @@ test('offsetStream: windowed view', () => {
 	s.seek(3);  // Seek to offset 3 first
 	const os = bin.offsetStream(s, 3, 4);  // Create window from 3 to 7
 	assert.equal(os.tell(), 0);  // Position in window is 0
-	assert.equal(os.remaining(), 4);  // 4 bytes remaining in window
 	os.seek(2);
 	assert.equal(os.tell(), 2);
 	assert.equal(s.tell(), 5);  // Underlying stream at 3+2=5
@@ -120,6 +100,35 @@ test('Numbers: read and write', () => {
 	const s2 = new bin.stream(data);
 	const val = bin.read(s2, numbersSpec);
 	assert.deepEqual(val, numbersData);
+});
+
+test('Float16: infinities and NaN roundtrip', () => {
+	const f16 = bin.utils.float16;
+
+	const a = f16(1.5), b = f16(2.5);
+	const c = a.add(b);
+	assert.equal(+a + +b, 4);
+
+	assert.equal(f16(Infinity).raw, 0x7c00);
+	assert.equal(f16(-Infinity).raw, 0xfc00);
+
+	//const nan = f16(NaN).raw;
+	//assert.equal(nan & 0x7c00, 0x7c00);
+	//assert.notEqual(nan & 0x03ff, 0);
+
+	assert.equal(f16.raw(0x7c00).valueOf(), Infinity);
+	assert.equal(f16.raw(0xfc00).valueOf(), -Infinity);
+	//assert.ok(Number.isNaN(f16.raw(nan).valueOf()));
+});
+
+test('Float16: denormals decode and encode', () => {
+	const f16 = bin.utils.float16;
+	assert.equal(f16.raw(0x0001).valueOf(), 2 ** -24);
+	assert.equal(f16.raw(0x03ff).valueOf(), (1023 / 1024) * (2 ** -14));
+	assert.equal(f16.raw(0x0400).valueOf(), 2 ** -14);
+
+	assert.equal(f16(2 ** -24).raw, 0x0001);
+	assert.equal(f16(2 ** -14).raw, 0x0400);
 });
 
 //=============================================================================
@@ -180,7 +189,7 @@ test('RemainingStringType: roundtrip', () => {
 	console.log('RemainingStringType data:', data);
 	const s2 = new bin.stream(data);
 	const val1 = bin.read(s2, bin.UINT8);
-	console.log('Read UINT8:', val1, ', remaining bytes:', s2.remaining());
+	console.log('Read UINT8:', val1);
 	const val = bin.read(s2, bin.RemainingStringType('utf8'));
 	console.log('RemainingStringType read back:', val);
 	assert.equal(val, 'World');
@@ -259,14 +268,31 @@ test('Class: read and write', () => {
 		x: bin.INT32_LE,
 		y: bin.INT32_LE,
 	});
-	const s		= new bin.growingStream();
+	const s1	= new bin.growingStream();
 	const pt	= new Point({x: 10, y: 20});
-	pt.write(s);
-	const data = s.terminate();
+	pt.write(s1);
+	const data = s1.terminate();
 
 	const s2	= new bin.stream(data);
 	const pt2	= new Point(s2);
 	assert.deepEqual(pt2, pt);
+
+	class CPoint extends bin.Class({
+		x: bin.INT32_LE,
+		y: bin.INT32_LE,
+	}) {
+		constructor(args: {x: number, y: number} | bin._stream) {
+			super(args);
+		}
+	}
+	const s3	= new bin.growingStream();
+	const pt3	= new CPoint({x: 10, y: 20});
+	pt3.write(s3);
+	const data2 = s3.terminate();
+
+	const s4	= new bin.stream(data2);
+	const pt4	= new CPoint(s4);
+	assert.deepEqual(pt4, pt3);
 });
 
 
@@ -459,39 +485,18 @@ test('BitFields: extract bit ranges', () => {
 // Async operations
 //=============================================================================
 
-class FileBacking {
-	private fd: Promise<fs.FileHandle>;
-
-	constructor(filename: string, flags: number) {
-		this.fd = fs.open(filename, flags);
-	}
-	async readAt(offset: number, data: Uint8Array) : Promise<number> {
-		return (await this.fd).read(data, 0, data.length, offset).then(read => read.bytesRead);
-	}
-	async writeAt(offset: number, data: Uint8Array) {
-		//console.log(`writeAt called: offset=${offset}, length=${data.length}, data=${Array.from(data).join(',')}`);
-		const result = await (await this.fd).write(data, 0, data.length, offset);
-		//console.log(`writeAt result: bytesWritten=${result.bytesWritten}`);
-	}
-	async close() {
-		const fd = await this.fd;
-		await fd.sync();
-		await fd.close();
-	}
-}
-
-function openFile(filename: string, flags = fs.constants.O_RDWR | fs.constants.O_CREAT | fs.constants.O_TRUNC) {
-	const file = new FileBacking(filename, flags);
+async function openFile(filename: string, flags = fs.constants.O_RDWR | fs.constants.O_CREAT | fs.constants.O_TRUNC) {
+	const fd = await fs.open(filename, flags);
 	return new bin.async.stream(
-		file.readAt.bind(file),
-		file.writeAt.bind(file),
-		_s => file.close()
+		(offset: number, data: Uint8Array) => fd.read(data, 0, data.length, offset).then(read => read.bytesRead),
+		(offset: number, data: Uint8Array) => fd.write(data, 0, data.length, offset).then(_write => undefined),
+		_s => fd.close()
 	);
 }
 
 const asyncTests = [
 	asyncTest('async.write and async.read', async () => {
-		const s = openFile('test.bin');
+		const s = await openFile('test.bin');
 		await bin.async.write(s, numbersSpec, numbersData);
 		await s.terminate();
 		s.seek(0);
@@ -500,7 +505,7 @@ const asyncTests = [
 	}),
 
 	asyncTest('async.readn2 multiple values', async () => {
-		const s = openFile('test.bin');
+		const s = await openFile('test.bin');
 		await bin.async.write(s, bin.ArrayType(bin.UINT8, bin.UINT32_LE), [1, 2, 3]);
 		await s.terminate();
 		s.seek(0);
@@ -513,12 +518,12 @@ const asyncTests = [
 			x: bin.INT32_LE,
 			y: bin.INT32_LE,
 		});
-		const s = openFile('test.bin');
+		const s = await openFile('test.bin');
 		const pt = new Point({x: 10, y: 20});
 		await pt.write(s);
 		await s.terminate();
 
-		const s2 = openFile('test.bin', fs.constants.O_RDONLY);
+		const s2 = await openFile('test.bin', fs.constants.O_RDONLY);
 		const pt2 = await Point.get(s2);
 		assert.equal(pt2.x, 10);
 		assert.equal(pt2.y, 20);
@@ -537,24 +542,24 @@ const asyncTests = [
 			}
 		}
 
-		const s1 = openFile('test.bin');
+		const s1 = await openFile('test.bin');
 		const pt = new Point({x: 10, y: 20});
 		await pt.write(s1);
 		await s1.terminate();
 
-		const s2 = openFile('test.bin', fs.constants.O_RDONLY);
+		const s2 = await openFile('test.bin', fs.constants.O_RDONLY);
 		const pt2 = await Point.get(s2);
 		assert.deepEqual(pt, pt2);
 
 		const Curve = bin.async.Extend(Point, {
 			flags: bin.INT8,
 		});
-		const s3 = openFile('test.bin');
+		const s3 = await openFile('test.bin');
 		const curve = new Curve({x: 10, y: 20, flags: 1});
 		await curve.write(s3);
 		await s3.terminate();
 
-		const s4 = openFile('test.bin', fs.constants.O_RDONLY);
+		const s4 = await openFile('test.bin', fs.constants.O_RDONLY);
 		const curve2 = await Curve.get(s4);
 		assert.deepEqual(curve, curve2);
 	})

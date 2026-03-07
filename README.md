@@ -3,169 +3,512 @@
 [![GitHub stars](https://img.shields.io/github/stars/adrianstephens/binary.svg?style=social)](https://github.com/adrianstephens/binary)
 [![License](https://img.shields.io/npm/l/@isopodlabs/binary.svg)](LICENSE.txt)
 
-This package provides a set of utilities for reading and writing binary data in TypeScript.
+A TypeScript library for declarative binary data parsing and serialization. Define your binary structures with simple type specifications and let the library handle reading/writing.
 
 ## ☕ Support My Work  
 If you use this package, consider [buying me a cup of tea](https://coff.ee/adrianstephens) to support future updates!  
 
-## Usage
-
-Here is a basic example of how to use the package:
+## Quick Start
 
 ```typescript
-import * as binary from '@isopodlabs/binary';
+import * as bin from '@isopodlabs/binary';
 
-// Define an object to specify how to read a structure, e.g.
-const StructSpec = {
-    x:  binary.UINT16_LE, // read 16-bit little-endian
-    y:  binary.StringType(binary.UINT8, 'utf8') // reads an 8 bit length, and reads a string of that length
+// Define structure declaratively
+const FileHeader = {
+    magic:   bin.UINT32_LE,
+    version: bin.UINT16_LE,
+    name:    bin.StringType(bin.UINT8, 'utf8')
 };
 
-// Create a new stream from a Uint8Array
-const stream = new binary.stream(data);
+// Read from binary data
+const stream = new bin.stream(data);
+const header = bin.read(stream, FileHeader);
+// => {magic: 0x12345678, version: 1, name: "MyFile"}
 
-// Read data from the stream
-const myData = binary.read(stream, StructSpec);
-
-// The data should look like {x: 42, y: "Something"}
-console.log(myData);
-
-// Create a new stream for output
-const stream2 = new binary.growingStream;
-
-// Write data back to a stream
-binary.write(stream2, myData);
-
-// Extract written data as a Uint8Array
-const data2 = stream2.terminate();
+// Write back to binary
+const outStream = new bin.growingStream();
+bin.write(outStream, FileHeader, header);
+const bytes = outStream.terminate();
 ```
 
-**Interfaces**:
+## Why Choose This Library?
 
-- `_stream`: Base interface for stream handling
-  - `stream`: Main implementation of _stream
-  - `growingStream`: Allows the buffer to grow
-  - `endianStream`: Holds a 'be' flag that can be used by numeric readers
+**vs binary-parser**
+- ✅ Declarative object syntax instead of method chaining
+- ✅ Full TypeScript inference (no manual type annotations)
+- ✅ Bidirectional (read + write) vs read-only
+- ✅ Native async stream support
+- ✅ Dynamic field references: `s => s.obj.length` vs string-based `{length: 'length'}`
 
-- `Type`: something with get and put functions.
-- `TypeX`: a `Type`, a function, or a constant. Used to provide things like lengths for strings. If it's a `Type` the value is read from the stream, otherwise it is the result of calling the function or the provided constant.
+**vs restructure**:
+- ✅ Modern TypeScript-first design
+- ✅ Advanced features: async, custom float formats, bitfields
+- ✅ Class integration with `bin.Class()`
 
-**Functions**:
+**Key advantages**:
+- **Type safety**: Fully inferred types from specifications
+- **Bidirectional**: Single spec for both reading and writing
+- **Advanced types**: Custom floats, offset pointers, bitfields, conditional fields
+- **Class integration**: Extend with methods while keeping serialization
+- **Async native**: Built-in support for async I/O streams
 
-- `read(stream, type)`: Read from a stream.
-- `write(stream, type, value)`: Write a value to a stream.
+## Common Patterns
 
-## Built-in Types
+### Reading File Headers with Magic Numbers
 
-Note that in the following, `type` is an instance of a `Type`, and that parameters `len`, `offset`, and `test` are `TypeX`s.
+```typescript
+// With length field for later use
+const PNGChunk = {
+    length: bin.UINT32_BE,
+    type:   bin.Expect(bin.StringType(4, 'utf8'), "\x89PNG"),
+    data:   bin.Buffer(s => s.obj.length),
+    crc:    bin.UINT32_BE
+};
 
-### Numeric
+// Or read length inline (no length field in result)
+const SimpleChunk = {
+    data:   bin.Buffer(bin.UINT32_BE),  // Read size, then buffer
+    crc:    bin.UINT32_BE
+};
+```
 
-Read a (un)signed n-bit bigendian(be=true) or littleendian(be=false) integer, where n is a multiple of 8:
+### Variable-Length Arrays
 
-- `UINT(n, be)`
-- `INT(n, be)`
+```typescript
+// When you need the count as a field
+const MessageSpec = {
+    count:   bin.UINT16_LE,
+    // Array length comes from the 'count' field
+    items:   bin.ArrayType(s => s.obj.count, {
+        id:   bin.UINT32_LE,
+        text: bin.StringType(bin.UINT8, 'utf8')
+    })
+};
 
-The following are pre-defined:
-- `UINT8`: Read an 8-bit unsigned integer.
-- `INT8`: Read an 8-bit signed integer.
-- `UINT16_LE`: Read a 16-bit little-endian unsigned integer.
-- `UINT16_BE`: Read a 16-bit big-endian unsigned integer.
-- `INT16_LE`: Read a 16-bit little-endian signed integer.
-- `INT16_BE`: Read a 16-bit big-endian signed integer.
-- `UINT32_LE`: Read a 32-bit little-endian unsigned integer.
-- `UINT32_BE`: Read a 32-bit big-endian unsigned integer.
-- `INT32_LE`: Read a 32-bit little-endian signed integer.
-- `INT32_BE`: Read a 32-bit big-endian signed integer.
-- `UINT64_LE`: Read a 64-bit little-endian unsigned integer.
-- `UINT64_BE`: Read a 64-bit big-endian unsigned integer.
-- `INT64_LE`: Read a 64-bit little-endian signed integer.
-- `INT64_BE`: Read a 64-bit big-endian signed integer.
+// When count is only needed for the array (cleaner)
+const MessageSpec2 = {
+    // Reads count inline: no 'count' field in result
+    items:   bin.ArrayType(bin.UINT16_LE, {
+        id:   bin.UINT32_LE,
+        text: bin.StringType(bin.UINT8, 'utf8')
+    })
+};
+```
 
-Read a float:
-- `Float32_LE`: Read a 32-bit little-endian floating-point number.
-- `Float32_BE`: Read a 32-bit big-endian floating-point number.
-- `Float64_LE`: Read a 64-bit little-endian floating-point number.
-- `Float64_BE`: Read a 64-bit big-endian floating-point number.
+### Conditional Fields
 
-When using an `endianStream`, these readers use the endianness specified in the stream:
-- `UINT16`: Read a 16-bit unsigned integer with stream-specified endianness.
-- `INT16`: Read a 16-bit signed integer with stream-specified endianness.
-- `UINT32`: Read a 32-bit unsigned integer with stream-specified endianness.
-- `INT32`: Read a 32-bit signed integer with stream-specified endianness.
-- `UINT64`: Read a 64-bit unsigned integer with stream-specified endianness.
-- `INT64`: Read a 64-bit signed integer with stream-specified endianness.
-- `Float32`: Read a 32-bit floating-point number with stream-specified endianness.
-- `Float64`: Read a 64-bit floating-point number with stream-specified endianness.
+```typescript
+const Record = {
+    flags: bin.UINT8,
+    // Only read 'extra' if flags has bit 0 set
+    extra: bin.Optional(s => s.obj.flags & 1, bin.UINT32_LE)
+};
 
-Others:
-- `ULEB128`: Read an unsigned LEB128 (Little Endian Base 128) integer.
+// Different types based on a value
+const Packet = {
+    type: bin.UINT8,
+    payload: bin.Switch(s => s.obj.type, {
+        1: {x: bin.Float32, y: bin.Float32},
+        2: {message: bin.StringType(bin.UINT16_LE, 'utf8')},
+        3: {data: bin.Buffer(64)}
+    })
+};
+```
+
+### Working with Enums and Flags
+
+```typescript
+enum FileType { Text = 1, Binary = 2, Compressed = 3 }
+enum Permissions { Read = 1, Write = 2, Execute = 4 }
+
+const FileInfo = {
+    type:  bin.asEnum(bin.UINT8, FileType),
+    perms: bin.asFlags(bin.UINT8, Permissions)
+};
+
+const info = bin.read(stream, FileInfo);
+// => {type: FileType.Binary, perms: {Read: true, Write: false, Execute: true}}
+```
+
+### Using Classes for Adding Methods
+
+```typescript
+class Point extends bin.Class({
+    x: bin.Float32,
+    y: bin.Float32
+}) {
+    distance() {
+        return Math.sqrt(this.x ** 2 + this.y ** 2);
+    }
+}
+
+// Read directly into class instances
+const point = Point.get(stream);// or new Point(stream);
+console.log(point.distance());
+
+// Extend with additional fields
+const Point3D = bin.Extend(Point, {
+    z: bin.Float32
+});
+```
+
+## Core Concepts
+
+### Streams
+
+Streams manage reading/writing position and endianness:
+
+- `stream(data, be?)`: Read from a Uint8Array
+- `growingStream()`: Dynamically growing buffer for writing
+
+Streams expose:
+- `tell()`: Get current position
+- `seek(offset)`: Set position
+- `view(type, len)`: Read a buffer
+
+### Types
+
+A `Type` specifies how to serialize data. Types can be:
+
+1. **Built-in types**: `UINT32_LE`, `StringType(...)`, `ArrayType(...)`, etc.
+2. **Objects**: `{x: UINT16, y: UINT16}` reads/writes structured data
+3. **Arrays**: `[UINT8, UINT16, UINT32]` reads/writes tuples
+
+### TypeX (Dynamic Values)
+
+`TypeX` parameters accept three forms:
+
+```typescript
+// 1. Constant
+bin.ArrayType(4, bin.UINT32)  // Always 4 elements
+
+// 2. Read from stream
+bin.ArrayType(bin.UINT16_LE, bin.UINT32)  // Read length, then array
+
+// 3. Computed function
+bin.ArrayType(s => s.obj.count, bin.UINT32)  // Use previous field
+```
+
+The `s.obj` property provides access to already-read fields. Nested objects can access parent fields via `s.obj.obj`.
 
 
-### Strings
+## Type Reference
 
-- `StringType(len, encoding?, zeroTerminated?, lenScale?)`: Read a string of length `len` and given `encoding`. `len` can be a reader, a fixed value, or a function.
-- `NullTerminatedStringType`: Read a string up to the first 0.
-- `RemainingStringType(encoding?, zeroTerminated?)`: Read the remainder of the stream into a string.
+### Numeric Types
 
-### Arrays
+**Integers** - Use suffixes `_LE` (little-endian) or `_BE` (big-endian), otherwise endianness is specified by the stream:
+- `UINT8`, `INT8`: 8-bit integers
+- `UINT16`, `INT16`: 16-bit integers  
+- `UINT32`, `INT32`: 32-bit integers
+- `UINT64`, `INT64`: 64-bit integers (bigints)
+- `UINT(bits, be?)`, `INT(bits, be?)`: Custom bit widths (multiple of 8)
+- `ULEB128`: Variable-length LEB128 encoding
 
-- `ArrayType(len, type)`: Read an array of length `len` using the given `type`. `len` can be a reader, a fixed value, or a function.
-- `RemainingArrayType(type)`: Read the remainder of the stream into an array of the given `type`.
+**Floats**:
+- `Float32`, `Float64`: IEEE 754 floating-point
+- `Float(mbits, ebits, ebias?, sbit?, be?)`: Custom float formats
 
-### Others
+### String Types
 
-- `Struct(spec)`: Read a structured object. Not strictly necessary because any non-reader object is interpreted this way anyway.
-- `Remainder`: Read the remainder of the stream into a `Uint8Array`.
-- `Buffer(len)`: Read a buffer of length `len`.
-- `SkipType(len)`: Skip `len` bytes in the stream.
-- `AlignType(align)`: Align the stream to the specified alignment.
-- `Discard(type)`: Read and then discard the specified `type`.
-- `DontRead<T>()`: Do not read the specified `type` - used to create a placeholder property in an object.
-- `SizeType(len, type)`: Truncate the stream to `len` bytes, and read a `type`.
-- `OffsetType(offset, type)`: Start from `offset` bytes into the stream, read `type`.
-- `MaybeOffsetType(offset, type)`: As `OffsetType`, but returns `undefined` is the offset is 0.
-- `Const(value)`: Returns a constant value.
-- `Func(func)`: Returns a value from a custom function.
-- `FuncType(func)`: Read a type that is returned by a custom function.
-- `If(test, true_type, false_type?)`: Evaluates `test` and reads either `true_type` or `false_type`. The result is merged into the enclosing object.
-- `Optional(test, type)`: If `test` is truthy, reads `type`.
-- `Switch(test, switches)`: Reads one of the types in `switch` based on the result of `test`.
+- `StringType(len, encoding?, zeroTerminated?, lenScale?)`: Specified length string
+- `NullTerminatedStringType(encoding?)`: Read until null byte
+- `RemainingStringType(encoding?, zeroTerminated?)`: Read rest of stream
+
+Encodings: `'utf8'`, `'utf16le'`, `'utf16be'`
+
+### Array Types
+
+- `ArrayType(len, type)`: Specified length array
+- `RemainingArrayType(type)`: Read rest of stream as array
+
+### Buffer Types
+
+- `Buffer(len, view?)`: Raw bytes as TypedArray (default: Uint8Array)
+- `Remainder`: Read rest of stream as Uint8Array
+
+### Structural Types
+
+- `Struct(spec)`: Explicit struct (usually inferred from objects)
+- `Class(spec)`: See below
+- `Extend(spec)`: See below
+
+### Conditional Types
+
+- `Optional(test, type, falseType?)`: Conditionally read type
+- `If(test, trueType, falseType?)`: Branch and merge into parent
+- `Switch(test, switches)`: Multi-way branch by key
+
+### Offset Types
+
+- `OffsetType(offset, type)`: Jump to offset, read, return to position
+- `MaybeOffsetType(offset, type)`: Returns `undefined` if offset is 0
+- `SizeType(len, type)`: Limit read to specific byte count
+- `AlignType(align)`: Align to byte boundary
+- `SkipType(len)`: Skip bytes
+
+### Meta Types
+
+- `Const(value)`: Always returns constant
+- `Func(func)`: Call function for value
+- `FuncType(func)`: Dynamically determine type
+- `Discard(type)`: Read and discard
+- `Expect(type, value)`: Assert value matches
+- `DontRead<T>()`: Placeholder (doesn't read/write)
 
 ## Transformations
 
-Read types can be transformed using `as`.
-
-- `as(type, maker)`: Read a type and transform it using a maker function.
-- `Enum(e)`: Define an enumeration.
-- `Flags(e, noFalse)`: Define a set of flags.
-- `BitFields(bitfields)`: Define a set of bit fields.
-
-These are predefined for convenience:
-
-- `asHex(type)`: Read a type and transform it to a hexadecimal string.
-- `asInt(type, radix?)`: Read a type and transform it to an integer with the specified radix.
-- `asFixed(type, fracbits)`: Read a type and transform it to a fixed-point number with the specified fractional bits.
-- `asEnum(type, enum)`: Read a type and transform it to an enum value.
-- `asFlags(type, enum, noFalse?)`: Read a type and transform it to a flags value.
-
-
-## Advanced
-
-`ReadType<T>`: obtains the type that will be returned by a particular reader.
-
-`Class`: utility to synthesize a class from a reader spec, allowing inheritence:
+Transform parsed values with `as(type, maker, from?)`:
 
 ```typescript
-class MyClass extends binary.Class({
-    x:  binary.UINT16_LE,
-    y:  binary.StringType(binary.UINT8, 'utf8'),
+// Convert hex string to number
+const hexValue = bin.as(
+    bin.StringType(4, 'utf8'),
+    s => parseInt(s, 16),
+    n => n.toString(16).padStart(4, '0')
+);
+
+// Parse array into named object
+const RGB = bin.as(
+    [bin.UINT8, bin.UINT8, bin.UINT8],
+    ([r, g, b]) => ({r, g, b}),
+    ({r, g, b}) => [r, g, b]
+);
+```
+
+**Predefined transformations:**
+- `asHex(type)`: Display as hex string
+- `asInt(type, radix?)`: Parse string as integer
+- `asFixed(type, fracbits)`: Fixed-point decimal
+- `asEnum(type, enum)`: Map to enum value
+- `asFlags(type, enum, noFalse?)`: Decode bitmask to flags object
+
+**Enum & Flags:**
+```typescript
+enum Status { Idle = 0, Running = 1, Stopped = 2 }
+const status = bin.asEnum(bin.UINT8, Status);
+
+enum Flags { Read = 1, Write = 2, Execute = 4 }
+const perms = bin.asFlags(bin.UINT8, Flags);  // => {Read: true, Write: false, Execute: true}
+```
+
+**BitFields:**
+```typescript
+const Header = bin.BitFields({
+    version: 4,        // 4 bits
+    type:    8,        // 8 bits
+    flags:   [4, bin.Flags(MyFlags)],  // 4 bits as flags
+    reserved: 16       // 16 bits
+});
+```
+
+**Named Arrays:**
+```typescript
+// Array to named tuples
+const points = bin.arrayWithNames(
+    bin.ArrayType(3, {x: bin.Float32, y: bin.Float32}),
+    (pt, i) => `point${i}`
+);  // => [["point0", {x, y}], ["point1", {x, y}], ...]
+
+// Array to keyed object
+const lookup = bin.objectWithNames(
+    bin.ArrayType(bin.UINT8, {id: bin.UINT16, name: bin.StringType(bin.UINT8)}),
+    item => item.name
+);  // => {alice: {id, name}, bob: {id, name}, ...}
+```
+
+
+## Classes
+
+Generate classes with automatic serialization using `Class(spec)` or `Extend(base, spec)`.
+
+### Basic Classes
+
+```typescript
+const Point = bin.Class({
+    x: bin.Float32,
+    y: bin.Float32
+});
+
+// Create from data
+const p1 = new Point({x: 10, y: 20});
+
+// Read from stream
+const p2 = Point.get(stream);//or new Point(stream)
+
+// Write to stream
+p1.write(stream);
+// or
+Point.put(stream, p1);
+```
+
+### Extending Classes
+
+```typescript
+class Point extends bin.Class({
+    x: bin.Float32,
+    y: bin.Float32
 }) {
-  constructor(s: binary.stream) {
-    super(s);
-  }
+    // Add custom methods
+    distance() {
+        return Math.sqrt(this.x ** 2 + this.y ** 2);
+    }
+    
+    // Optional custom constructor
+    constructor(arg: {x: number, y: number} | bin._stream) {
+        super(arg);
+    }
+}
+
+// Extend with more fields
+const Point3D = bin.Extend(Point, {
+    z: bin.Float32
+});
+
+const p3d = new Point3D({x: 1, y: 2, z: 3});
+```
+
+### Practical Example: File Format
+
+```typescript
+class BMPHeader extends bin.Class({
+    magic:      bin.StringType(2, 'utf8'),
+    fileSize:   bin.UINT32_LE,
+    reserved:   bin.UINT32_LE,
+    dataOffset: bin.UINT32_LE,
+    headerSize: bin.UINT32_LE,
+    width:      bin.INT32_LE,
+    height:     bin.INT32_LE,
+    planes:     bin.UINT16_LE,
+    bitsPerPixel: bin.UINT16_LE
+}) {
+    validate() {
+        if (this.magic !== 'BM') throw new Error('Not a BMP file');
+        if (this.planes !== 1) throw new Error('Invalid BMP');
+    }
+}
+
+const header = BMPHeader.get(stream);
+header.validate();
+```
+
+## Async API
+
+All synchronous types work with async streams. The package exports `binary.async` with async-aware functions.
+
+```typescript
+import * as bin from '@isopodlabs/binary';
+import * as fs from 'fs/promises';
+
+async function openFile(filename: string, flags = fs.constants.O_RDWR | fs.constants.O_CREAT | fs.constants.O_TRUNC) {
+	const fd = await fs.open(filename, flags);
+	return new bin.async.stream(
+		(offset: number, data: Uint8Array) => fd.read(data, 0, data.length, offset).then(read => read.bytesRead),
+		(offset: number, data: Uint8Array) => fd.write(data, 0, data.length, offset).then(_write => undefined),
+		_s => fd.close()
+	);
+}
+
+// Use with async read/write
+const stream = openFile('data.bin');
+const data = await bin.async.read(stream, MySpec);
+
+// async Classes
+class AsyncRecord extends bin.async.Class({
+    id: bin.UINT32_LE,
+    data: bin.Buffer(256)
+}) {}
+
+const record = await AsyncRecord.get(stream);//Note: cannot use new AsyncRecord(stream) because constructors can't be async
+await record.write(outStream);
+```
+
+
+## Utilities
+
+The `binary.utils` namespace provides low-level utilities:
+
+### Bit Operations
+`isPow2`, `lowestSet`, `highestSetIndex`, `bitCount`, `splitBinary`, etc.
+
+### Integer I/O
+`getUint`, `getInt`, `getBigUint`, `putUint`, `putBigUint` - Read/write arbitrary-sized integers from DataViews.
+
+### Custom Floats
+`Float(mbits, ebits, ebias?, sbit?)` - Define custom floating-point formats.
+Predefined: `float8_e4m3`, `float8_e5m2`, `float16`
+
+### TypedArray Extensions
+- `UintTypedArray(bits, be?)`, `IntTypedArray(bits, be?)` - Arbitrary bit-width arrays
+- `Uint16beArray`, `Float32beArray`, etc. - Big-endian variants
+- `as8`, `as16`, `as32`, `asF32`, etc. - Zero-copy reinterpret casts
+
+### Text Encoding
+`encodeText`, `decodeText`, `decodeTextTo0`, `getTextEncoding` - UTF-8/UTF-16 encoding.
+
+See the [source code](src/utils.ts) for complete API documentation.
+
+## Advanced Topics
+
+### Custom Streams
+
+Implement `_stream` interface for custom data sources:
+
+```typescript
+class MemoryMappedStream implements bin._stream {
+    private offset = 0;
+    
+    tell() { return this.offset; }
+    seek(offset: number) { this.offset = offset; }
+    
+    view<T>(type: ViewMaker<T>, len: number): T {
+        const view = new type(this.buffer, this.offset, len);
+        this.offset += len * (type.BYTES_PER_ELEMENT ?? 1);
+        return view;
+    }
 }
 ```
+
+### Big-Endian Mode
+
+Set `be` property on stream for default endianness:
+
+```typescript
+const stream = new bin.stream(data);
+stream.be = true;  // All reads now default to big-endian
+
+// Or per-type
+const value = bin.read(stream, bin.UINT32_BE);
+```
+
+### Offset Tables and Pointers
+
+Common pattern for reading offset-based structures:
+
+```typescript
+const FileWithOffsets = {
+    header: {
+        stringTableOffset: bin.UINT32_LE,
+        dataOffset: bin.UINT32_LE
+    },
+    // Jump to offset, read data, return to original position
+    stringTable: bin.OffsetType(
+        s => s.obj.header.stringTableOffset,
+        bin.ArrayType(bin.UINT16_LE, bin.NullTerminatedStringType())
+    ),
+    data: bin.OffsetType(
+        s => s.obj.header.dataOffset,
+        bin.Buffer(1024)
+    )
+};
+```
+
+### Performance Tips
+
+- Use `Buffer()` instead of `RemainingArrayType(UINT8)` for raw bytes - it's faster
+- Reuse stream instances rather than creating new ones
+- For large files, consider async streams to avoid loading entire file into memory
+- Use classes for frequently-parsed structures - they're optimized
+- Avoid deep nesting in type specs - flatten where possible
 
 ## License
 
