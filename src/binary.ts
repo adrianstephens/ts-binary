@@ -7,6 +7,7 @@ export * as async from './async';
 import { after, MaybePromise, TypedArray, ViewMaker } from './utils';
 
 type NoPromise<T> = T extends PromiseLike<infer R> ? R : T;
+type StreamResult<S extends _stream|async._stream, T> = S extends _stream ? T : Promise<T>;
 
 //-----------------------------------------------------------------------------
 //	stream
@@ -21,7 +22,7 @@ export interface _stream {
 	view<T>(type: ViewMaker<T>, len: number, strict?: boolean): T;
 }
 
-export function remainder(s: _stream|async._stream) {
+export function remainder<S extends _stream|async._stream>(s: S): StreamResult<S, Uint8Array> {
 	const tell = s.tell();
 	const chunk = (nextSize: number): any => after(
 		s.view(Uint8Array, nextSize, false),
@@ -53,7 +54,6 @@ export function buffer_at(s: _stream, offset: number, len?: number) {
 	return result;
 }
 
-type StreamResult<S extends _stream|async._stream, T> = S extends _stream ? T : Promise<T>;
 
 class OffsetProxy<S extends _stream|async._stream> {
 	be?: boolean;
@@ -426,7 +426,7 @@ export function writex2<T extends object | number | string>(s: any, type: TypeX2
 //	non-reading types (don't need async)
 //-----------------------------------------------------------------------------
 
-interface TypeT0<T> {
+export interface TypeT0<T> {
 	get(s: _stream|async._stream): T;
 	put(s: _stream|async._stream, v: T): void;
 }
