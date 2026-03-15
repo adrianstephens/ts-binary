@@ -1,6 +1,8 @@
 /// <reference types="node" />
 import ts, { factory } from "typescript";
 
+const quiet = true;
+
 function isExported(node: ts.Declaration): boolean {
 	return (ts.getCombinedModifierFlags(node) & ts.ModifierFlags.Export) !== 0;
 }
@@ -196,7 +198,6 @@ class TypeEvaluator {
 }	
 
 function resolveTypesTransformer(program: ts.Program): ts.TransformerFactory<ts.SourceFile> | undefined {
-	console.log("Resolving Types");
 	const typeChecker = program.getTypeChecker();
 
 	return (context: ts.TransformationContext) => {
@@ -227,7 +228,8 @@ function resolveTypesTransformer(program: ts.Program): ts.TransformerFactory<ts.
 			}
 
 			function print(x: string) {
-				console.log('  '.repeat(depth) + x);
+				if (!quiet)
+					console.log('  '.repeat(depth) + x);
 			}
 
 			function fixParents(node: ts.Node) {
@@ -292,7 +294,6 @@ function resolveTypesTransformer(program: ts.Program): ts.TransformerFactory<ts.
 							for (const statement of sourceFile.statements) {
 								if (ts.isTypeAliasDeclaration(statement) && isExported(statement) && statement !== declaration) {
 									if (ts.isTypeReferenceNode(statement.type) && ts.isIdentifier(statement.type.typeName) && statement.type.typeName.escapedText === name.escapedText) {
-										console.log("found");
 										const newName = factory.createIdentifier(statement.name.getText());
 										return factory.updateTypeReferenceNode(node, newName, node.typeArguments);
 									}
@@ -302,7 +303,6 @@ function resolveTypesTransformer(program: ts.Program): ts.TransformerFactory<ts.
 									if (importClause && importClause.namedBindings && ts.isNamedImports(importClause.namedBindings)) {
 										for (const i of importClause.namedBindings.elements) {
 											if (i.propertyName?.escapedText === name.escapedText) {
-												console.log("found");
 												const newName = factory.createIdentifier(i.name.getText());
 												return factory.updateTypeReferenceNode(node, newName, node.typeArguments);
 											}
@@ -378,7 +378,6 @@ function resolveTypesTransformer(program: ts.Program): ts.TransformerFactory<ts.
 									if (importClause && importClause.namedBindings && ts.isNamedImports(importClause.namedBindings)) {
 										for (const i of importClause.namedBindings.elements) {
 											if (i.propertyName?.escapedText === text) {
-												console.log("found");
 												importClause.getSourceFile();
 												const newName = factory.createIdentifier(i.name.getText());
 												//return factory.updateTypeReferenceNode(node, newName, node.typeArguments);
@@ -401,7 +400,6 @@ function resolveTypesTransformer(program: ts.Program): ts.TransformerFactory<ts.
 
 					node1 = visitSubType(node1) as ts.TypeNode;
 					const text2 = serializeNode(node1);
-					//console.log("**AFTER**" + text2);
 					if (text2 !== 'any')
 						return node1;
 				}
@@ -414,10 +412,8 @@ function resolveTypesTransformer(program: ts.Program): ts.TransformerFactory<ts.
 				if (ts.isTypePredicateNode(node)) {
 					// Don't re-type predicates; generic expansion in createReturn already substituted literal types.
 					if (node.type) {
-						console.log('fixing type predicate: ', serializeNode(node.type));
 						const resolvedType = resolveUtilityTypes(node.type);
 						const fixedType = fixType(resolvedType, (node.parent as ts.Declaration) ?? declaration);
-						console.log('fixed type predicate: ', serializeNode(fixedType));
 						if (fixedType !== node.type)
 							return factory.updateTypePredicateNode(node, node.assertsModifier, node.parameterName, fixedType);
 					}
@@ -512,7 +508,7 @@ function resolveTypesTransformer(program: ts.Program): ts.TransformerFactory<ts.
 						if (param) {
 							const members	= getMembersOfConstraintType(typeChecker, member.typeParameters![0].constraint!);
 							if (members.length) {
-								console.log(`Expanding generic method "${member.name.getText()}"`);
+								print(`Expanding generic method "${member.name.getText()}"`);
 								//setParent(member, statement);
 								for (const i of members) {
 									const overload = factory.createMethodDeclaration(
@@ -574,7 +570,7 @@ function resolveTypesTransformer(program: ts.Program): ts.TransformerFactory<ts.
 					if (param) {
 						const members	= getMembersOfConstraintType(typeChecker, statement.typeParameters![0].constraint!);
 						if (members.length) {
-							console.log(`Expanding generic function "${statement.name?.escapedText}"`);
+							print(`Expanding generic function "${statement.name?.escapedText}"`);
 							for (const i of members) {
 								const overload 	= factory.createFunctionDeclaration(
 									[factory.createModifier(ts.SyntaxKind.ExportKeyword)], // Add export

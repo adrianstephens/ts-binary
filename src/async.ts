@@ -1,89 +1,159 @@
-import type { ReadType } from './binary';
-import { after, MaybePromise, ViewMaker } from './utils';
+import type { ReadType } from './sync';
+import { after, MaybePromise, ViewMaker, TypedArray, TypedArrayLike } from './utils';
 
-export interface _stream {
-	be?:			boolean;				// read numbers as bigendian/littleendian
-	obj?:			any;					// current object being read
-	atend?:			(s: _stream) => void;	// callback for when stream finished
-	tell():			number;					// current offset from start of file
-	seek(offset: number): void;				// set current offset from start of file
-	view<T>(type: ViewMaker<T>, len: number, strict?: boolean): Promise<T>;
-}
+//-----------------------------------------------------------------------------
+//	stream
+//-----------------------------------------------------------------------------
 
-export class stream implements _stream {
-	be?:	boolean;
-	obj?:	any;
+export class _stream {
+	readonly kind = 'async' as const;
 	atend?: (s: _stream) => Promise<void>;
 
-	buffer		= new ArrayBuffer(1024);
-	offset		= 0;	// current offset from start of file
-	end			= 0;	// end of file
-
-	buff_at		= 0;	// offset of start of buffer from start of file
-	buff_size	= 0;	// size of buffer in bytes
-	flush_begin	= 0;	// start of flush range
-	flush_end	= 0;	// end of flush range
+	protected offset0;
 
 	constructor(
-		public readAt:	(offset: number, data: Uint8Array) => Promise<number>,
-		public writeAt?:(offset: number, data: Uint8Array) => Promise<void>,
-		atend?:	(s: _stream) => Promise<void>
+        private viewDelegate: <T>(type: ViewMaker<T>, offset: number, len: number) => MaybePromise<T>,
+		protected offset = 0,
+		protected end?: number,
+        public be?: boolean,
+        public obj?: any
 	) {
-		this.atend = (async (s: stream) => { await s.flush(); await atend?.(s); }) as any;
+		this.offset0 = offset;
 	}
-	async checksize(len: number, useRead: boolean) {
-		const buff_offset = this.offset - this.buff_at;
 
-		if (buff_offset < 0 || buff_offset >= this.buff_size) {
-			this.flush();
-
-			if (this.buffer.byteLength < len || (len <= 1024 && this.buffer.byteLength > 1024))
-				this.buffer = new ArrayBuffer(len <= 1024 ? 1024 : len * 2);
-
-			this.buff_at	= this.offset;
-			const read		= await this.readAt(this.offset, new Uint8Array(this.buffer));
-			this.buff_size	= useRead ? read : this.buffer.byteLength;
-			this.end		= this.buff_at + this.buff_size;
-
-			this.flush_begin = this.flush_end	= 0;
-
-		} else if (buff_offset + len > this.buff_size) {
-			this.flush();
-
-			const remaining = this.buff_size - buff_offset;
-			const buffer 	= new ArrayBuffer(len <= 1024 ? 1024 : len * 2);
-			new Uint8Array(buffer).set(new Uint8Array(this.buffer, buff_offset, remaining), 0);
-			this.buffer		= buffer;
-
-			this.buff_at	= this.offset;
-			const read		= await this.readAt(this.offset + remaining, new Uint8Array(buffer, remaining));
-			this.buff_size 	= useRead ? remaining + read : buffer.byteLength;
-			this.end		= this.buff_at + this.buff_size;
-
-			this.flush_begin = remaining;
-			this.flush_end	= 0;
-		}
-	}
+	get masterOffset()	{ return this.offset0; }
 	tell() {
-		return this.offset;
+		return this.offset - this.offset0;
 	}
 	seek(offset: number) {
-		this.offset = offset;
+		this.offset = offset + this.offset0;
+	}
+	skip(len: number) {
+		this.offset += len;
+	}
+	align(align: number) {
+		const misalign = this.tell() % align;
+		if (misalign)
+			this.skip(align - misalign);
+	}
+	remaining() {
+		return this.end === undefined ? undefined : this.end - this.tell();
 	}
 
-	async view<T>(type: ViewMaker<T>, len: number, _strict = true): Promise<T> {
-		const byteLength = len * (type.BYTES_PER_ELEMENT ?? 1);
-		await this.checksize(byteLength, false);
-		const buff_offset = this.offset - this.buff_at;
+	view<T extends TypedArrayLike>(type: ViewMaker<T>, len: number, strict = true): MaybePromise<T> {
+		const bytesPerElement = type.BYTES_PER_ELEMENT || 1;
+		const byteLength = len * bytesPerElement;
+
+		if (this.end && byteLength > this.end - this.tell()) {
+			if (strict)
+				return Promise.reject(new Error('stream: out of bounds'));
+			len = Math.floor((this.end - this.tell()) / bytesPerElement);
+		}
+
+		const result = this.viewDelegate(type, this.offset, len);
 		this.offset += byteLength;
-		this.flush_end = Math.max(this.flush_end, this.offset - this.buff_at);
-		return new type(this.buffer, buff_offset, len);
+		return result;
 	}
 
-	async flush() {
-		if (this.writeAt && this.flush_end > this.flush_begin)
-			return this.writeAt(this.buff_at + this.flush_begin, new Uint8Array(this.buffer, this.flush_begin, this.flush_end - this.flush_begin));
+	offsetStream(offset: number, size?: number) {
+		if (size === undefined && this.end !== undefined)
+			size = this.end - offset;
+		return new _stream(this.viewDelegate, this.offset0 + offset, size, this.be, this.obj);
 	}
+	
+	async remainder() {
+		const tell = this.tell();
+		for (let size = 16;; size <<= 1) {
+			const data = await this.view(Uint8Array, size, false);
+			if (data.length < size)
+				return data;
+			this.seek(tell);
+		}
+	}
+	async write_view<T extends TypedArray>(buf: T) {
+		(await this.view(Uint8Array, buf.length)).set(buf);
+	}
+	view_at<T extends TypedArrayLike>(type: ViewMaker<T>, offset: number, len?: number) {
+		return this.viewDelegate(type, this.offset0 + offset, len ?? (this.end !== undefined ? this.end - offset : 0));
+	}
+	async peek(len: number) {
+		return this.view_at(Uint8Array, this.tell(), len);
+	}
+	read<T extends TypeReader>(spec: T) { return read(this, spec); }
+	write<T extends TypeWriter>(type: T, value: ReadType<T>) { return write(this, type, value); }
+}
+
+export class stream extends _stream {
+	constructor(
+		readAt:		(offset: number, data: Uint8Array) => Promise<number>,
+		writeAt?:	(offset: number, data: Uint8Array) => Promise<void>,
+		atend?:		(s: _stream) => Promise<void>,
+		end?:		number
+	) {
+
+		let buffer		= new ArrayBuffer(1024);
+		let buff_at		= 0;	// offset of start of buffer from start of file
+		let buff_size	= 0;	// size of buffer in bytes
+		let flush_begin	= 0;	// start of flush range
+		let flush_end	= 0;	// end of flush range
+
+		const flush = () => {
+			if (writeAt && flush_end > flush_begin)
+				return writeAt(buff_at + flush_begin, new Uint8Array(buffer, flush_begin, flush_end - flush_begin));
+		};
+
+		const expand = async (offset: number, byteLength: number) => {
+			let buff_offset		= offset - buff_at;
+			while (buff_offset < 0 || buff_offset + byteLength > buff_size) {
+				const remaining = buff_size - buff_offset;
+				await flush();
+				flush_begin = flush_end = 0;
+
+				if (buff_offset < 0 || remaining < 0) {
+					if (buffer.byteLength < byteLength || (byteLength <= 1024 && buffer.byteLength > 1024))
+						buffer = new ArrayBuffer(byteLength <= 1024 ? 1024 : byteLength * 2);
+
+					buff_at		= offset;
+					buff_size	= buffer.byteLength;
+					//const _read	= 
+					await readAt(offset, new Uint8Array(buffer));
+
+				} else {
+					const newbuff 	= new ArrayBuffer(byteLength <= 1024 ? 1024 : byteLength * 2);
+					new Uint8Array(newbuff).set(new Uint8Array(buffer, buff_offset, remaining), 0);
+					buffer		= newbuff;
+
+					buff_at		= offset;
+					buff_size 	= buffer.byteLength;
+					//const _read	= 
+					await readAt(offset + remaining, new Uint8Array(buffer, remaining));
+				}
+				buff_offset		= offset - buff_at;
+			}
+
+			flush_end		= Math.max(flush_end, buff_offset + byteLength);
+			return buff_offset;
+		};
+
+		super((type, offset, len) => {
+			const byteLength	= len * (type.BYTES_PER_ELEMENT || 1);
+			const buff_offset	= offset - buff_at;
+
+			if (buff_offset >= 0 && buff_offset + byteLength <= buff_size) {
+				flush_end = Math.max(flush_end, buff_offset + byteLength);
+				return new type(buffer, buff_offset, len);
+			}
+
+			return expand(offset, byteLength).then(buff_offset => new type(buffer, buff_offset, len));
+
+		}, 0, end);
+
+		this.atend = (async (s: _stream) => {
+			await flush();
+			await atend?.(s);
+		});
+	}
+
 	async terminate() {
 		await this.atend?.(this);
 	}
@@ -99,9 +169,9 @@ export type TypeT<T>	= TypeReaderT<T> & TypeWriterT<T>;
 export type TypeX0<T>	= ((s: _stream, value?: T)=>MaybePromise<T>) | T
 export type TypeX<T>	= TypeT<T> | TypeX0<T>;
 
-export type TypeReader	= TypeReaderT<any> | { [key: string]: TypeReader; } | TypeReaderT<any>[]
-export type TypeWriter	= TypeWriterT<any> | { [key: string]: TypeWriter; } | TypeWriterT<any>[]
-export type Type 		= TypeT<any> | { [key: string]: Type; } | TypeT<any>[]
+export type TypeReader	= TypeReaderT<any> | { [key: string]: TypeReader; } | readonly TypeReaderT<any>[]
+export type TypeWriter	= TypeWriterT<any> | { [key: string]: TypeWriter; } | readonly TypeWriterT<any>[]
+export type Type 		= TypeT<any> | { [key: string]: Type; } | readonly TypeT<any>[]
 
 export interface WithStaticGet {
 	get:<X extends abstract new (...args: any) => any>(this: X, s: _stream) => Promise<InstanceType<X>>

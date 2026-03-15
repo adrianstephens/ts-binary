@@ -17,7 +17,7 @@ import * as bin from '@isopodlabs/binary';
 const FileHeader = {
     magic:   bin.UINT32_LE,
     version: bin.UINT16_LE,
-    name:    bin.StringType(bin.UINT8, 'utf8')
+    name:    bin.String(bin.UINT8, 'utf8')
 };
 
 // Read from binary data
@@ -60,7 +60,7 @@ const bytes = outStream.terminate();
 // With length field for later use
 const PNGChunk = {
     length: bin.UINT32_BE,
-    type:   bin.Expect(bin.StringType(4, 'utf8'), "\x89PNG"),
+    type:   bin.Expect(bin.String(4, 'utf8'), "\x89PNG"),
     data:   bin.Buffer(s => s.obj.length),
     crc:    bin.UINT32_BE
 };
@@ -79,18 +79,18 @@ const SimpleChunk = {
 const MessageSpec = {
     count:   bin.UINT16_LE,
     // Array length comes from the 'count' field
-    items:   bin.ArrayType(s => s.obj.count, {
+    items:   bin.Array(s => s.obj.count, {
         id:   bin.UINT32_LE,
-        text: bin.StringType(bin.UINT8, 'utf8')
+        text: bin.String(bin.UINT8, 'utf8')
     })
 };
 
 // When count is only needed for the array (cleaner)
 const MessageSpec2 = {
     // Reads count inline: no 'count' field in result
-    items:   bin.ArrayType(bin.UINT16_LE, {
+    items:   bin.Array(bin.UINT16_LE, {
         id:   bin.UINT32_LE,
-        text: bin.StringType(bin.UINT8, 'utf8')
+        text: bin.String(bin.UINT8, 'utf8')
     })
 };
 ```
@@ -109,7 +109,7 @@ const Packet = {
     type: bin.UINT8,
     payload: bin.Switch(s => s.obj.type, {
         1: {x: bin.Float32, y: bin.Float32},
-        2: {message: bin.StringType(bin.UINT16_LE, 'utf8')},
+        2: {message: bin.String(bin.UINT16_LE, 'utf8')},
         3: {data: bin.Buffer(64)}
     })
 };
@@ -170,7 +170,7 @@ Streams expose:
 
 A `Type` specifies how to serialize data. Types can be:
 
-1. **Built-in types**: `UINT32_LE`, `StringType(...)`, `ArrayType(...)`, etc.
+1. **Built-in types**: `UINT32_LE`, `String(...)`, `Array(...)`, etc.
 2. **Objects**: `{x: UINT16, y: UINT16}` reads/writes structured data
 3. **Arrays**: `[UINT8, UINT16, UINT32]` reads/writes tuples
 
@@ -180,13 +180,13 @@ A `Type` specifies how to serialize data. Types can be:
 
 ```typescript
 // 1. Constant
-bin.ArrayType(4, bin.UINT32)  // Always 4 elements
+bin.Array(4, bin.UINT32)  // Always 4 elements
 
 // 2. Read from stream
-bin.ArrayType(bin.UINT16_LE, bin.UINT32)  // Read length, then array
+bin.Array(bin.UINT16_LE, bin.UINT32)  // Read length, then array
 
 // 3. Computed function
-bin.ArrayType(s => s.obj.count, bin.UINT32)  // Use previous field
+bin.Array(s => s.obj.count, bin.UINT32)  // Use previous field
 ```
 
 The `s.obj` property provides access to already-read fields. Nested objects can access parent fields via `s.obj.obj`.
@@ -210,16 +210,16 @@ The `s.obj` property provides access to already-read fields. Nested objects can 
 
 ### String Types
 
-- `StringType(len, encoding?, zeroTerminated?, lenScale?)`: Specified length string
-- `NullTerminatedStringType(encoding?)`: Read until null byte
-- `RemainingStringType(encoding?, zeroTerminated?)`: Read rest of stream
+- `String(len, encoding?, zeroTerminated?, lenScale?)`: Specified length string
+- `NullTerminatedString(encoding?)`: Read until null byte
+- `RemainingString(encoding?, zeroTerminated?)`: Read rest of stream
 
 Encodings: `'utf8'`, `'utf16le'`, `'utf16be'`
 
 ### Array Types
 
-- `ArrayType(len, type)`: Specified length array
-- `RemainingArrayType(type)`: Read rest of stream as array
+- `Array(len, type)`: Specified length array
+- `RemainingArray(type)`: Read rest of stream as array
 
 ### Buffer Types
 
@@ -240,11 +240,10 @@ Encodings: `'utf8'`, `'utf16le'`, `'utf16be'`
 
 ### Offset Types
 
-- `OffsetType(offset, type)`: Jump to offset, read, return to position
-- `MaybeOffsetType(offset, type)`: Returns `undefined` if offset is 0
-- `SizeType(len, type)`: Limit read to specific byte count
-- `AlignType(align)`: Align to byte boundary
-- `SkipType(len)`: Skip bytes
+- `Offset(offset, type, skip_null)`: Jump to offset, read, return to position (returns `undefined` if offset is 0)
+- `Size(len, type)`: Limit read to specific byte count
+- `Aligned(align, type)`: Align to byte boundary before reading type
+- `AfterSkip(skip, type)`: Skip bytes before reading type
 
 ### Meta Types
 
@@ -253,7 +252,6 @@ Encodings: `'utf8'`, `'utf16le'`, `'utf16be'`
 - `FuncType(func)`: Dynamically determine type
 - `Discard(type)`: Read and discard
 - `Expect(type, value)`: Assert value matches
-- `DontRead<T>()`: Placeholder (doesn't read/write)
 
 ## Transformations
 
@@ -262,7 +260,7 @@ Transform parsed values with `as(type, maker, from?)`:
 ```typescript
 // Convert hex string to number
 const hexValue = bin.as(
-    bin.StringType(4, 'utf8'),
+    bin.String(4, 'utf8'),
     s => parseInt(s, 16),
     n => n.toString(16).padStart(4, '0')
 );
@@ -305,13 +303,13 @@ const Header = bin.BitFields({
 ```typescript
 // Array to named tuples
 const points = bin.arrayWithNames(
-    bin.ArrayType(3, {x: bin.Float32, y: bin.Float32}),
+    bin.Array(3, {x: bin.Float32, y: bin.Float32}),
     (pt, i) => `point${i}`
 );  // => [["point0", {x, y}], ["point1", {x, y}], ...]
 
 // Array to keyed object
 const lookup = bin.objectWithNames(
-    bin.ArrayType(bin.UINT8, {id: bin.UINT16, name: bin.StringType(bin.UINT8)}),
+    bin.Array(bin.UINT8, {id: bin.UINT16, name: bin.String(bin.UINT8)}),
     item => item.name
 );  // => {alice: {id, name}, bob: {id, name}, ...}
 ```
@@ -371,7 +369,7 @@ const p3d = new Point3D({x: 1, y: 2, z: 3});
 
 ```typescript
 class BMPHeader extends bin.Class({
-    magic:      bin.StringType(2, 'utf8'),
+    magic:      bin.String(2, 'utf8'),
     fileSize:   bin.UINT32_LE,
     reserved:   bin.UINT32_LE,
     dataOffset: bin.UINT32_LE,
@@ -493,7 +491,7 @@ const FileWithOffsets = {
     // Jump to offset, read data, return to original position
     stringTable: bin.OffsetType(
         s => s.obj.header.stringTableOffset,
-        bin.ArrayType(bin.UINT16_LE, bin.NullTerminatedStringType())
+        bin.Array(bin.UINT16_LE, bin.NullTerminatedString())
     ),
     data: bin.OffsetType(
         s => s.obj.header.dataOffset,
@@ -504,7 +502,7 @@ const FileWithOffsets = {
 
 ### Performance Tips
 
-- Use `Buffer()` instead of `RemainingArrayType(UINT8)` for raw bytes - it's faster
+- Use `Buffer()` instead of `RemainingArray(UINT8)` for raw bytes - it's faster
 - Reuse stream instances rather than creating new ones
 - For large files, consider async streams to avoid loading entire file into memory
 - Use classes for frequently-parsed structures - they're optimized

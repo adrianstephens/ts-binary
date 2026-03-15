@@ -1,4 +1,4 @@
-import * as bin from '../dist/binary';
+import * as bin from '../dist/index';
 import * as fs from 'fs/promises';
 import * as assert from 'assert';
 
@@ -44,9 +44,9 @@ test('growingStream: write and terminate', () => {
 
 test('offsetStream: windowed view', () => {
 	const data = new Uint8Array([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
-	const s = new bin.BufferStream(data.buffer);
+	const s = new bin.stream(data);
 	s.seek(3);  // Seek to offset 3 first
-	const os = bin.offsetStream(s, 3, 4);  // Create window from 3 to 7
+	const os = s.offsetStream(3, 4);  // Create window from 3 to 7
 	assert.equal(os.tell(), 0);  // Position in window is 0
 	os.seek(2);
 	assert.equal(os.tell(), 2);
@@ -130,6 +130,19 @@ test('Float16: denormals decode and encode', () => {
 	assert.equal(f16(2 ** -24).raw, 0x0001);
 	assert.equal(f16(2 ** -14).raw, 0x0400);
 });
+
+test('Float128', () => {
+	const a64 = 1, b64 = 2 ** 64;
+	const c64 = a64 + b64 - b64;
+	console.log(+c64);
+
+
+	const f128 = bin.utils.float128;
+	const a = f128(a64), b = f128(b64);
+	const c = a.add(b).sub(b);
+	console.log(+c);
+});
+
 
 //=============================================================================
 // Numeric types - ULEB128
@@ -412,24 +425,20 @@ test('Switch: discriminate on key', () => {
 
 test('AlignType: padding', () => {
 	const s = new bin.growingStream();
-	bin.write(s, bin.UINT32_LE, 1);
-	bin.write(s, bin.AlignType(8), undefined);
-	bin.write(s, bin.UINT32_LE, 2);
+	bin.write(s, {a: bin.UINT32_LE, b: bin.Aligned(8, bin.UINT32_LE)}, {a:1, b:2});
 	const result = s.terminate();
 	assert.equal(result.length, 4 + 4 + 4);
 });
 
 test('SkipType: skip bytes', () => {
 	const s = new bin.growingStream();
-	bin.write(s, bin.UINT32_LE, 1);
-	bin.write(s, bin.SkipType(4), undefined);
-	bin.write(s, bin.UINT32_LE, 2);
+	bin.write(s, {a: bin.UINT32_LE, b: bin.AfterSkip(4, bin.UINT32_LE)}, {a:1, b:2});
 	const result = s.terminate();
 	assert.equal(result.length, 4 + 4 + 4);
 });
 
 //=============================================================================
-// Const and DontRead
+// Const
 //=============================================================================
 
 test('Const: constant value', () => {
@@ -441,14 +450,6 @@ test('Const: constant value', () => {
 	assert.equal(val, 42);
 });
 
-test('DontRead: skip field', () => {
-	const s = new bin.growingStream();
-	bin.write(s, bin.DontRead<number>(), 1);
-	const result = s.terminate();
-	const s2 = new bin.stream(result);
-	const val = bin.read(s2, bin.DontRead<number>());
-	assert.equal(val, undefined);
-});
 
 //=============================================================================
 // Enum and Flags
@@ -476,9 +477,27 @@ test('Flags: convert flags to object', () => {
 
 test('BitFields: extract bit ranges', () => {
 	const bitFields = bin.BitFields({ a: 4, b: 4 });
-	const result = bitFields(0xAB);
+	const result = bitFields.to(0xAB);
 	assert.equal(result.a, 0xB);
 	assert.equal(result.b, 0xA);
+});
+
+//=============================================================================
+// Measure
+//=============================================================================
+
+test('Measure: determine serialisation size', () => {
+	const measure = bin.measure({
+		a: bin.UINT32_LE,
+		b: bin.UINT16_LE,
+	});
+	assert.equal(measure, 6);
+
+	const measure2 = bin.measure(bin.ULEB128);
+	assert.equal(measure2, 1);
+	
+	const measure3 = bin.measure(bin.ULEB128, 0x123456);
+	assert.equal(measure3, 3);
 });
 
 //=============================================================================
