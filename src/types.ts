@@ -570,7 +570,7 @@ export function Aligned<T extends Type2>(align: number, type: T): TypeT2<ReadTyp
 	};
 }
 
-export function Offset<T extends Type2>(offset: TypeX2<number>, type: T, skip_null: false): TypeT2<ReadType<T>>;
+export function Offset<T extends Type2>(offset: TypeX2<number>, type: T, skip_null?: false): TypeT2<ReadType<T>>;
 export function Offset<T extends Type2>(offset: TypeX2<number>, type: T, skip_null: true): TypeT2<ReadType<T> | undefined>;
 export function Offset<T extends Type2>(offset: TypeX2<number>, type: T, skip_null = false) {
 	return {
