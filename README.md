@@ -429,7 +429,7 @@ The `binary.utils` namespace provides low-level utilities:
 `isPow2`, `lowestSet`, `highestSetIndex`, `bitCount`, `splitBinary`, etc.
 
 ### Integer I/O
-`getUint`, `getInt`, `getBigUint`, `putUint`, `putBigUint` - Read/write arbitrary-sized integers from DataViews.
+`getUint`, `getBigUint`, `putUint`, `putBigUint` - Read/write arbitrary-sized integers from DataViews.
 
 ### Custom Floats
 `Float(mbits, ebits, ebias?, sbit?)` - Define custom floating-point formats.

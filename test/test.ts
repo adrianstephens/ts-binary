@@ -350,11 +350,11 @@ test('Extend: read and write', () => {
 test('SizeType: roundtrip', () => {
 	const s = new bin.growingStream();
 	const data = { a: 42, b: 123 };
-	bin.write(s, bin.SizeType(bin.UINT16_LE, { a: bin.UINT32_LE, b: bin.UINT32_LE }), data);
+	bin.write(s, bin.Size(bin.UINT16_LE, { a: bin.UINT32_LE, b: bin.UINT32_LE }), data);
 	const result = s.terminate();
 	console.log('SizeType data:', result);
 	const s2 = new bin.stream(result);
-	const val = bin.read(s2, bin.SizeType(bin.UINT16_LE, { a: bin.UINT32_LE, b: bin.UINT32_LE }));
+	const val = bin.read(s2, bin.Size(bin.UINT16_LE, { a: bin.UINT32_LE, b: bin.UINT32_LE }));
 	console.log('SizeType read back:', val);
 	assert.equal(val.a, 42);
 	assert.equal(val.b, 123);
@@ -363,28 +363,28 @@ test('SizeType: roundtrip', () => {
 test('OffsetType: read and write', () => {
 	const s = new bin.growingStream();
 	const data = { x: 100 };
-	bin.write(s, bin.OffsetType(bin.UINT32_LE, { x: bin.UINT32_LE }), data);
+	bin.write(s, bin.Offset(bin.UINT32_LE, { x: bin.UINT32_LE }), data);
 	const result = s.terminate();
 	const s2 = new bin.stream(result);
-	const val = bin.read(s2, bin.OffsetType(bin.UINT32_LE, { x: bin.UINT32_LE }));
+	const val = bin.read(s2, bin.Offset(bin.UINT32_LE, { x: bin.UINT32_LE }));
 	assert.equal(val.x, 100);
 });
 
 test('MaybeOffsetType: null offset', () => {
 	const s = new bin.growingStream();
-	bin.write(s, bin.MaybeOffsetType(bin.UINT32_LE, bin.UINT32_LE), undefined);
+	bin.write(s, bin.Offset(bin.UINT32_LE, bin.UINT32_LE, true), undefined);
 	const result = s.terminate();
 	const s2 = new bin.stream(result);
-	const val = bin.read(s2, bin.MaybeOffsetType(bin.UINT32_LE, bin.UINT32_LE));
+	const val = bin.read(s2, bin.Offset(bin.UINT32_LE, bin.UINT32_LE, true));
 	assert.equal(val, undefined);
 });
 
 test('MaybeOffsetType: with value', () => {
 	const s = new bin.growingStream();
-	bin.write(s, bin.MaybeOffsetType(bin.UINT32_LE, bin.UINT32_LE), 0xDEADBEEF);
+	bin.write(s, bin.Offset(bin.UINT32_LE, bin.UINT32_LE, true), 0xDEADBEEF);
 	const result = s.terminate();
 	const s2 = new bin.stream(result);
-	const val = bin.read(s2, bin.MaybeOffsetType(bin.UINT32_LE, bin.UINT32_LE));
+	const val = bin.read(s2, bin.Offset(bin.UINT32_LE, bin.UINT32_LE, true));
 	assert.equal(val, 0xDEADBEEF);
 });
 

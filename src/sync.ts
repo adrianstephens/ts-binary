@@ -1,10 +1,11 @@
-import { TypedArray, TypedArrayLike, ViewMaker, NoPromise } from './utils';
+// (Removed invalid export and debug/test types that referenced missing types)
+import { TypedArray, TypedArrayLike, ViewMaker, NoPromise, UnionToIntersection } from './utils';
 
 //-----------------------------------------------------------------------------
 //	stream
 //-----------------------------------------------------------------------------
 
-export type viewDelegate<T extends TypedArrayLike> = (type: ViewMaker<T>, offset: number, len: number) => T;
+export type viewDelegate = <T extends TypedArrayLike>(type: ViewMaker<T>, offset: number, len: number) => T;
 
 export class _stream {
 	readonly kind = 'sync' as const;
@@ -13,15 +14,19 @@ export class _stream {
 	protected offset0;
 
 	constructor(
-        private viewDelegate: <T>(type: ViewMaker<T>, offset: number, len: number) => T,
+		private viewDelegate: viewDelegate,
 		protected offset = 0,
 		protected end?: number,
-        public be?: boolean,
-        public obj?: any
-    ) {
+		public be?: boolean,
+		public obj?: any
+	) {
 		this.offset0 = offset;
 	}
 
+	// Always merge resolved value types for each field, never raw readers/writers
+protected view_absolute<T extends TypedArrayLike>(type: ViewMaker<T>, offset: number, len: number): T {
+	return this.viewDelegate(type, offset, len);
+}
 	get masterOffset()	{ return this.offset0; }
 	tell() {
 		return this.offset - this.offset0;
@@ -44,10 +49,11 @@ export class _stream {
 	view<T extends TypedArrayLike>(type: ViewMaker<T>, len: number, strict = true): T {
 		const bytesPerElement = type.BYTES_PER_ELEMENT || 1;
 		const byteLength = len * bytesPerElement;
-		if (this.end && byteLength > this.end - this.tell())
+		
+		if (this.end !== undefined && byteLength > this.end - this.tell())
 			len = Math.floor((this.end - this.tell()) / bytesPerElement);
 
-        const result = this.viewDelegate(type, this.offset, len);
+		const result = this.view_absolute(type, this.offset, len);
 		if (strict && result.byteLength < byteLength)
 			throw new Error('stream: out of bounds');
 		this.offset += result.byteLength;
@@ -59,6 +65,14 @@ export class _stream {
 			size = this.end - offset;
 		return new _stream(this.viewDelegate, this.offset0 + offset, size, this.be, this.obj);
 	}
+	subStream<T extends _stream>(type: new (...args: any[]) => T, offset?: number, size?: number) {
+		if (offset === undefined)
+			offset = this.tell();
+		if (size === undefined && this.end !== undefined)
+			size = this.end - offset;
+		return new type(this.viewDelegate, this.offset0 + offset, size, this.be, this.obj);
+	}
+
 	
 	remainder() {
 		const remaining = this.end !== undefined ? this.end - this.tell() : 0;
@@ -68,13 +82,21 @@ export class _stream {
 		this.view(Uint8Array, buf.length).set(buf);
 	}
 	view_at<T extends TypedArrayLike>(type: ViewMaker<T>, offset: number, len?: number) {
-		return this.viewDelegate(type, this.offset0 + offset, len ?? (this.end !== undefined ? this.end - offset : 0));
+		return this.view_absolute(type, this.offset0 + offset, len ?? (this.end !== undefined ? this.end - offset : 0));
 	}
 	peek(len: number) {
 		return this.view_at(Uint8Array, this.tell(), len);
 	}
 	read<T extends TypeReader>(spec: T) { return read(this, spec); }
 	write<T extends TypeWriter>(type: T, value: ReadType<T>) { return write(this, type, value); }
+
+	[Symbol.dispose]() {
+		const atend = this.atend;
+		if (atend) {
+			this.atend = undefined;
+			atend(this);
+		}
+	}
 }
 
 export class stream extends _stream {
@@ -101,7 +123,11 @@ export class growingStream extends _stream {
     }
 
 	terminate() {
-		this.atend?.(this);
+		const atend = this.atend;
+		if (atend) {
+			this.atend = undefined;
+			atend(this);
+		}
 		return new Uint8Array(this.buffer, 0, this.offset);
 	}
 }
@@ -125,12 +151,8 @@ export function measure<T extends Type>(type: T, data?: ReadType<T>) {
 		dummy.write(type, data);
 	else
 		dummy.read(type);
-	return dummy.tell();
-}
-
-//-----------------------------------------------------------------------------
-//	Types
-//-----------------------------------------------------------------------------
+		return dummy.tell();
+	}
 
 export interface TypeReaderT<T> { get(s: _stream): T }
 export interface TypeWriterT<T> { put(s: _stream, v: T): void }
@@ -140,27 +162,38 @@ export type TypeReader	= TypeReaderT<any> | { [key: string]: TypeReader; } | rea
 export type TypeWriter	= TypeWriterT<any> | { [key: string]: TypeWriter; } | readonly TypeWriterT<any>[]
 export type Type 		= TypeT<any> | { [key: string]: Type; } | readonly TypeT<any>[]
 
-export interface MergeType<T> { merge: T; }
-export interface CorrelatedMerge<T> { correlated_merge: T; }
-
-type UnionToIntersection<U> = (U extends any ? (x: U) => void : never) extends (x: infer I) => void ? I : never;
+export interface MergeBase<T> { merge: T; }
+export interface MergeType<T> extends MergeBase<T> { readonly correlated: false; }
+export interface CorrelatedMerge<T> extends MergeBase<T> { readonly correlated: true; }
 
 type TupleReadType<T extends readonly unknown[]> = T extends readonly [infer First, ...infer Rest]
 	? [ReadType<First>, ...TupleReadType<Rest>]
 	: [];
 
 
+type CorrelatedHelper<T> = {[K in keyof T]: T[K] extends { get: (...args: any) => infer R } ? (NoPromise<R> extends CorrelatedMerge<infer U> ? U : never) : never}[keyof T];
+
+type FixIntersection3<T, I> = {
+	[K in keyof I]: I[K] extends never ? (K extends keyof T ? T[K] extends undefined ? T[K] : Exclude<T[K], undefined> : I[K]) : I[K];
+};
+
+type FixIntersection<T> = FixIntersection3<T, UnionToIntersection<T>>;
+
 export type ReadType<T> = T extends {new (s: infer _S extends _stream): infer R} ? R
 	: T extends { get: (s: any) => infer R } ? NoPromise<R>
 	: T extends readonly unknown[] ? TupleReadType<T>
-	: T extends { [key: string]: any } ? (
-		{ [K in keyof T as T[K] extends { new (...args: any): any } ? K : T[K] extends { get: (...args: any) => infer R } ? (NoPromise<R> extends MergeType<any> | CorrelatedMerge<any> ? never : NoPromise<R> extends undefined ? never : K) : K]: ReadType<T[K]> }
-		& UnionToIntersection<Exclude<{
-			[K in keyof T]: T[K] extends { new (...args: any): any } ? never : T[K] extends { get: (...args: any) => infer R } ? (NoPromise<R> extends CorrelatedMerge<any> ? never : NoPromise<R> extends MergeType<infer U> ? U : never) : never
+	: T extends object ? FixIntersection<Exclude<
+		{ [K in keyof T as
+			  T[K] extends { new (...args: any): any } ? K
+			: T[K] extends { get: (...args: any) => infer R } ? NoPromise<R> extends undefined ? never : NoPromise<R> extends MergeBase<any> ? never : K
+			: K
+		]: ReadType<T[K]> }
+		| {
+			[K in keyof T]: T[K] extends { get: (...args: any) => infer R } ? (NoPromise<R> extends MergeType<infer U> ? U : never) : never
 		}[keyof T], never>>
-		& ([{[K in keyof T]: T[K] extends { get: (...args: any) => infer R } ? (NoPromise<R> extends CorrelatedMerge<infer U> ? U : never) : never}[keyof T]] extends [never] ? unknown : {[K in keyof T]: T[K] extends { get: (...args: any) => infer R } ? (NoPromise<R> extends CorrelatedMerge<infer U> ? U : never) : never}[keyof T])
-	)
+		& ([CorrelatedHelper<T>] extends [never] ? unknown : CorrelatedHelper<T>)
 	: never;
+
 
 export interface WithStaticGet {
 	get:<X extends abstract new (...args: any) => any>(this: X, s: _stream) => InstanceType<X>

@@ -5,6 +5,8 @@ import { after, MaybePromise, ViewMaker, TypedArray, TypedArrayLike } from './ut
 //	stream
 //-----------------------------------------------------------------------------
 
+export type viewDelegate = <T extends TypedArrayLike>(type: ViewMaker<T>, offset: number, len: number) => MaybePromise<T>;
+
 export class _stream {
 	readonly kind = 'async' as const;
 	atend?: (s: _stream) => Promise<void>;
@@ -12,13 +14,17 @@ export class _stream {
 	protected offset0;
 
 	constructor(
-        private viewDelegate: <T>(type: ViewMaker<T>, offset: number, len: number) => MaybePromise<T>,
+		private viewDelegate: viewDelegate,
 		protected offset = 0,
 		protected end?: number,
-        public be?: boolean,
-        public obj?: any
+		public be?: boolean,
+		public obj?: any
 	) {
 		this.offset0 = offset;
+	}
+
+	protected view_absolute<T extends TypedArrayLike>(type: ViewMaker<T>, offset: number, len: number): MaybePromise<T> {
+		return this.viewDelegate(type, offset, len);
 	}
 
 	get masterOffset()	{ return this.offset0; }
@@ -44,15 +50,15 @@ export class _stream {
 		const bytesPerElement = type.BYTES_PER_ELEMENT || 1;
 		const byteLength = len * bytesPerElement;
 
-		if (this.end && byteLength > this.end - this.tell()) {
-			if (strict)
-				return Promise.reject(new Error('stream: out of bounds'));
+		if (this.end !== undefined && byteLength > this.end - this.tell())
 			len = Math.floor((this.end - this.tell()) / bytesPerElement);
-		}
 
-		const result = this.viewDelegate(type, this.offset, len);
-		this.offset += byteLength;
-		return result;
+		return after(this.view_absolute(type, this.offset, len), result => {
+			if (strict && result.byteLength < byteLength)
+				throw new Error('stream: out of bounds');
+			this.offset += result.byteLength;
+			return result;
+		});
 	}
 
 	offsetStream(offset: number, size?: number) {
@@ -60,7 +66,14 @@ export class _stream {
 			size = this.end - offset;
 		return new _stream(this.viewDelegate, this.offset0 + offset, size, this.be, this.obj);
 	}
-	
+	subStream<T extends _stream>(type: new (...args: any[]) => T, offset?: number, size?: number) {
+		if (offset === undefined)
+			offset = this.tell();
+		if (size === undefined && this.end !== undefined)
+			size = this.end - offset;
+		return new type(this.viewDelegate, this.offset0 + offset, size, this.be, this.obj);
+	}
+
 	async remainder() {
 		const tell = this.tell();
 		for (let size = 16;; size <<= 1) {
@@ -74,13 +87,32 @@ export class _stream {
 		(await this.view(Uint8Array, buf.length)).set(buf);
 	}
 	view_at<T extends TypedArrayLike>(type: ViewMaker<T>, offset: number, len?: number) {
-		return this.viewDelegate(type, this.offset0 + offset, len ?? (this.end !== undefined ? this.end - offset : 0));
+		return this.view_absolute(type, this.offset0 + offset, len ?? (this.end !== undefined ? this.end - offset : 0));
 	}
 	async peek(len: number) {
 		return this.view_at(Uint8Array, this.tell(), len);
 	}
 	read<T extends TypeReader>(spec: T) { return read(this, spec); }
 	write<T extends TypeWriter>(type: T, value: ReadType<T>) { return write(this, type, value); }
+}
+
+class Lock {
+	queuedOps	= 0;
+	lockTail	= Promise.resolve<void>(undefined);
+	async with<T>(fn: () => Promise<T>): Promise<T> {
+		this.queuedOps++;
+		const prev = this.lockTail;
+		let release!: () => void;
+		this.lockTail = new Promise<void>(resolve => { release = resolve; });
+
+		await prev;
+		try {
+			return await fn();
+		} finally {
+			this.queuedOps--;
+			release();
+		}
+	};
 }
 
 export class stream extends _stream {
@@ -96,6 +128,8 @@ export class stream extends _stream {
 		let buff_size	= 0;	// size of buffer in bytes
 		let flush_begin	= 0;	// start of flush range
 		let flush_end	= 0;	// end of flush range
+
+		const lock = new Lock();
 
 		const flush = () => {
 			if (writeAt && flush_end > flush_begin)
@@ -134,7 +168,30 @@ export class stream extends _stream {
 			flush_end		= Math.max(flush_end, buff_offset + byteLength);
 			return buff_offset;
 		};
+/*
+		super((type, offset, len) => {
+			const byteLength = len * (type.BYTES_PER_ELEMENT || 1);
 
+			// fast path: preserve MaybePromise sync behavior when uncontended
+			if (lock.queuedOps === 0) {
+				const buff_offset	= offset - buff_at;
+				if (buff_offset >= 0 && buff_offset + byteLength <= buff_size) {
+					flush_end = Math.max(flush_end, buff_offset + byteLength);
+					return new type(buffer, buff_offset, len);
+				}
+			}
+
+			// slow path: serialize all shared-state mutation
+			return lock.with(async () => {
+				let buff_offset	= offset - buff_at;
+				if (buff_offset < 0 || buff_offset + byteLength > buff_size)
+					buff_offset = await expand(offset, byteLength);
+
+				flush_end = Math.max(flush_end, buff_offset + byteLength);
+				return new type(buffer, buff_offset, len);
+			});
+		}, 0, end);
+*/
 		super((type, offset, len) => {
 			const byteLength	= len * (type.BYTES_PER_ELEMENT || 1);
 			const buff_offset	= offset - buff_at;
@@ -155,7 +212,14 @@ export class stream extends _stream {
 	}
 
 	async terminate() {
-		await this.atend?.(this);
+		const atend = this.atend;
+		if (!atend)
+			return;
+		this.atend = undefined;
+		await atend(this);
+	}
+	[Symbol.asyncDispose]() {
+		return this.terminate();
 	}
 }
 

@@ -1,6 +1,7 @@
 export * from './sync';
 export * as utils from './utils';
 export * as async from './async';
+export * as bit from './bit';
 export * from './types';
 
 //shortcuts
@@ -100,7 +101,7 @@ export function Enum(e: EnumType) {
 	const e1 = (Object.entries(e).filter(([, v]) => typeof v === 'number') as [string, number][]).sort(([, v1], [, v2]) => v2 - v1);
 	const e2 = Object.fromEntries(e1.map(([k, v]) => [v, k]));
 
-	function split_enum(x: number) {
+	function split_enum(x: number | bigint): string {
 		const results: string[] = [];
 		for (const k of e1) {
 			if (k[1] === 0) {
@@ -108,10 +109,13 @@ export function Enum(e: EnumType) {
 					return k[0];
 				break;
 			}
-			const n = Math.floor(x / k[1]);
+			const n = typeof x === 'bigint' ? x / BigInt(k[1]) : Math.floor(x / k[1]);
 			if (n) {
 				results.push(n > 1 ? `${k[0]}*${n}` : k[0]);
-				x %= k[1];
+				if (typeof x === 'bigint')
+					x %= BigInt(k[1]);
+				else
+					x %= k[1];
 				if (!x)
 					break;
 			}
@@ -131,7 +135,7 @@ export function asEnum<T extends number|bigint, E extends EnumType>(type: TypeT2
 }
 export function asEnum2<T extends number|bigint, E extends EnumType>(type: TypeT2<T>, e: E) {
 	const toString = Enum(e);
-	return as(type, v => ({ v, toString: () => toString(v) }));
+	return as(type, v => ({ valueOf: () => v, toString: () => toString(v) }));
 }
 
 //-----------------------------------------------------------------------------
@@ -159,17 +163,12 @@ export function Flags(e: EnumType, noFalse: boolean) {
 export function asFlags<T extends TypeT2<number> | TypeT2<bigint>, E extends EnumType>(type: T, e: E, noFalse = true) {
 	return as(type, Flags(e, noFalse));
 }
-export function asFlags2<T extends TypeT2<number> | TypeT2<bigint>, E extends EnumType>(type: T, e: E, noFalse = true) {
-	const toString = Flags(e, noFalse);
-	return as(type, v => ({ v, toString: () => toString(v) }));
-}
 
 //-----------------------------------------------------------------------------
 // bitfields
 //-----------------------------------------------------------------------------
 
 export type BitField<D> = [number, adapter<number, D>];
-
 
 export function BitFields<T extends Record<string, number | BitField<any>>>(bitfields: T) {
 	type Num = {[K in keyof T]: T[K] extends BitField<infer D> ? D : number;};
@@ -187,17 +186,18 @@ export function BitFields<T extends Record<string, number | BitField<any>>>(bitf
 				obj[i] = typeof bf === 'number' ? v : make(bf[1], Number(v));
 			}
 			return obj;
+		} else {
+			const obj = {} as Record<string, number>;
+			let y: number = x;
+			for (const i in bitfields) {
+				const bf	= bitfields[i];
+				const bits	= typeof bf === 'number' ? bf : bf[0];
+				const v		= y & ((1 << bits) - 1);
+				y >>= bits;
+				obj[i] = typeof bf === 'number' ? v : make(bf[1], v);
+			}
+			return obj;
 		}
-		const obj = {} as Record<string, number>;
-		let y: number = x;
-		for (const i in bitfields) {
-			const bf	= bitfields[i];
-			const bits	= typeof bf === 'number' ? bf : bf[0];
-			const v		= y & ((1 << bits) - 1);
-			y >>= bits;
-			obj[i] = typeof bf === 'number' ? v : make(bf[1], v);
-		}
-		return obj;
 	};
 
 	const from = (obj: Record<string, any>) => {
@@ -216,7 +216,7 @@ export function BitFields<T extends Record<string, number | BitField<any>>>(bitf
 	};
 
 	return {
-		to: to as ((x: number, _opt?: any) => Num) & ((x: bigint, _opt?: any) => Big),
-		from: from as ((obj: Num, _opt?: any) => number) & ((obj: Big, _opt?: any) => bigint),
+		to:		to		as ((x: number, _opt?: any) => Num)		& ((x: bigint, _opt?: any) => Big),
+		from:	from	as ((obj: Num, _opt?: any) => number)	& ((obj: Big, _opt?: any) => bigint),
 	};
 }

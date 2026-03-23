@@ -3,6 +3,11 @@ import * as async from './async';
 import { after, tryAfter, MaybePromise, TypedArray, ViewMaker } from './utils';
 import { _stream, ReadType, MergeType, CorrelatedMerge, TypeX, TypeX0, TypeT, Type, TypeReader, TypeWriter, isReader, isWriter, getx, measure } from './sync';
 
+export type stream2 = (_stream | async._stream) & {
+	read<T extends TypeReader>(spec: T) : MaybePromise<ReadType<T>>;
+	write<T extends TypeWriter>(type: T, value: ReadType<T>): MaybePromise<void>;
+}
+
 //-----------------------------------------------------------------------------
 // possibly async versions of read/write
 //-----------------------------------------------------------------------------
@@ -18,7 +23,7 @@ export function read2<T extends async.TypeReader>(s: async._stream, spec: T, obj
 export function read2<T extends TypeReader|async.TypeReader>(s: _stream|async._stream, spec: T, obj?: any) : MaybePromise<ReadType<T>>;
 export function read2<T extends TypeReader|async.TypeReader>(s: any, spec: T, obj?: any) : MaybePromise<ReadType<T>> {
 	if (isReader(spec))
-		return after(spec.get(s), value => value);
+		return spec.get(s);
 
 	if (!obj)
 		obj = {obj: s.obj} as any;
@@ -37,10 +42,9 @@ export function write2(s: _stream, type: TypeWriter, value: any) : void;
 export function write2(s: async._stream, type: async.TypeWriter, value: any) : Promise<void>;
 export function write2(s: _stream|async._stream, type: TypeWriter|async.TypeWriter, value: any) : MaybePromise<void>;
 export function write2(s: any, type: TypeWriter|async.TypeWriter, value: any) : MaybePromise<void> {
-	if (isWriter(type)) {
-		type.put(s, value);
-		return;
-	}
+	if (isWriter(type))
+		return type.put(s, value);
+
 	s.obj = value;
     return Object.entries(type).reduce((acc: any, [k, t]) => 
         after(acc, () => write2(s, t, value[k]))
@@ -174,7 +178,9 @@ export function Struct<T extends Type2>(spec: T): TypeT2<ReadType<T>> {
 //	? TypeT<number>
 //	: TypeT<bigint>;
 
-type TypeNumber2<T extends number> = T extends 8 | 16 | 24 | 32 | 40 | 48 | 56
+//type TypeNumber2<T extends number> = TypeT2<utils.NumericType<T>>;
+
+type TypeNumber2<N extends number> = N extends 8 | 16 | 24 | 32 | 40 | 48 | 56
 	? TypeT2<number>
 	: TypeT2<bigint>;
 
@@ -230,14 +236,14 @@ function _UINT64(be?: boolean): TypeT2<bigint> { return {
 	put: ((s, v) => after(s.view(DataView, 8), dv => utils.putBigUint(dv, 0, v, 8, !be))) as put2<bigint>,
 };};
 function _INT64(be?: boolean): TypeT2<bigint> { return {
-	get: ((s => after(s.view(DataView, 8), dv => utils.getBigInt(dv, 0, 8, !be))) as get2<bigint>),
+	get: ((s => after(s.view(DataView, 8), dv => utils.toSignedBig(utils.getBigUint(dv, 0, 8, !be), 64))) as get2<bigint>),
 	put: ((s, v) => after(s.view(DataView, 8), dv => utils.putBigUint(dv, 0, v, 8, !be))) as put2<bigint>,
 };};
 export const UINT64_LE	= _UINT64(false), UINT64_BE = _UINT64(true), INT64_LE = _INT64(false), INT64_BE = _INT64(true);
 export const UINT64		= endian_from_stream(_UINT64), INT64 = endian_from_stream(_INT64);
 
 //computed int
-export function UINT<T extends number>(bits: T, be?: boolean): TypeNumber2<T> {
+export function UINT<N extends number>(bits: N, be?: boolean): TypeNumber2<N> {
 	if (bits & 7)
 		throw new Error('bits must be multiple of 8');
 
@@ -252,25 +258,25 @@ export function UINT<T extends number>(bits: T, be?: boolean): TypeNumber2<T> {
 			get: ((s => after(s.view(DataView, bits / 8), dv => utils.getUint(dv, 0, bits / 8, !be))) as get2<number>),
 			put: ((s, v) => after(s.view(DataView, bits / 8), dv => utils.putUint(dv, 0, v, bits / 8, !be))) as put2<number>
 		}), be)
-	 ) as TypeNumber2<T>;
+	 ) as TypeNumber2<N>;
 }
 
-export function INT<T extends number>(bits: T, be?: boolean): TypeNumber2<T> {
+export function INT<N extends number>(bits: N, be?: boolean): TypeNumber2<N> {
 	if (bits & 7)
 		throw new Error('bits must be multiple of 8');
 
 	return (bits === 8 ? UINT8
 		: bits > 56
 		? endian((be?: boolean) => ({
-			get: ((s => after(s.view(DataView, bits / 8), dv => utils.getBigInt(dv, 0, bits / 8, !be))) as get2<bigint>),
+			get: ((s => after(s.view(DataView, bits / 8), dv => utils.toSignedBig(utils.getBigUint(dv, 0, bits / 8, !be), bits))) as get2<bigint>),
 			put: ((s, v) => after(s.view(DataView, bits / 8), dv => utils.putBigUint(dv, 0, v, bits / 8, !be))) as put2<bigint>
 		}), be)
 		: endian(bits == 16 ? _INT16 : bits == 32 ? _INT32 :
 		(be?: boolean) => ({
-			get: ((s => after(s.view(DataView, bits / 8), dv => utils.getInt(dv, 0, bits / 8, !be))) as get2<number>),
+			get: ((s => after(s.view(DataView, bits / 8), dv => utils.toSigned(utils.getUint(dv, 0, bits / 8, !be), bits))) as get2<number>),
 			put: ((s, v) => after(s.view(DataView, bits / 8), dv => utils.putUint(dv, 0, v, bits / 8, !be))) as put2<number>
 		}), be)
-	) as TypeNumber2<T>;
+	) as TypeNumber2<N>;
 }
 
 //float
@@ -575,13 +581,8 @@ export function Offset<T extends Type2>(offset: TypeX2<number>, type: T, skip_nu
 export function Offset<T extends Type2>(offset: TypeX2<number>, type: T, skip_null = false) {
 	return {
 		get: (s => after(readx2(s, offset), off => {
-			if (!skip_null || off) {
-				const start = s.tell();
-				return after(read2(s.offsetStream(off), type), r => {
-					s.seek(start);
-					return r;
-				});
-			}
+			if (!skip_null || off)
+				return read2(s.offsetStream(off), type);
 		})) as get2<ReadType<T> | undefined>,
 
 		put: ((s, v) => {
@@ -592,11 +593,12 @@ export function Offset<T extends Type2>(offset: TypeX2<number>, type: T, skip_nu
 				const atend = s.atend;
 				s.atend = (s: any) => {
 					const start = s.tell();
-					return after(write2(s.offsetStream(start), type, v), () => {
-						const end = s.tell();
+					const s2 = s.offsetStream(start);
+					return after(write2(s2, type, v), () => {
+						const size = s2.tell();
 						s.seek(offsetPos);
 						return after(writex2(s, offset, start), () => {
-							s.seek(end);
+							s.skip(size);
 							atend?.(s);
 						});
 					});
@@ -676,18 +678,25 @@ export function Try<T extends Record<string, Type2>>(type: T) {
 		get: (s => {
 			const obj = {obj: s.obj} as any;
 			s.obj	= obj;
+			let acc: any = undefined;
 			let tell = s.tell();
-			let acc: any;
-			for (const [k, t] of Object.entries(type)) {
-				acc = tryAfter(acc, () => {
-					tell = s.tell();
-					return after(read2(s, t as any), value => obj[k] = value);
-				}, () => {
-					s.seek(tell);
-				});
+			try {
+				for (const [k, t] of Object.entries(type)) {
+					acc = after(acc, () => {
+						tell = s.tell();
+						return after(read2(s, t), value => obj[k] = value);
+					});
+				}
+			} catch (e) {
+				acc = Promise.reject(e);
 			}
-			return after(acc, () => {
-				s.obj	= obj.obj;
+			return tryAfter(acc, () => {
+				s.obj = obj.obj;
+				delete obj.obj;
+				return obj;
+			}, () => {
+				s.seek(tell);
+				s.obj = obj.obj;
 				delete obj.obj;
 				return obj;
 			});
@@ -695,20 +704,18 @@ export function Try<T extends Record<string, Type2>>(type: T) {
 
 		put: ((s, v) => {
 			s.obj = v;
+			let acc: any = undefined;
 			let tell = s.tell();
-			let acc: any;
 			for (const [k, t] of Object.entries(type)) {
 				const v1 = (v as any)[k];
 				if (v1 === undefined)
 					break;
-				acc = tryAfter(acc, () => {
+				acc = after(acc, () => {
 					tell = s.tell();
-					return write2(s, t as any, v1);
-				}, () => {
-					s.seek(tell);
+					return write2(s, t, v1);
 				});
 			}
-			return acc;
+			return tryAfter(acc, () => undefined, () => s.seek(tell));
 		}) as put2<R>
 	} as TypeT2<R>;
 }
@@ -740,10 +747,27 @@ function read_merge2<T extends Type2>(s: _stream|async._stream, specs: T): Maybe
 		});
 
 	return Object.entries(specs).reduce((acc: any, [k, v]) =>
+		after(acc, () => after(read2(s as any, v as any), value => {
+			const current = s.obj[k];
+			if (value && current && typeof value === 'object' && typeof current === 'object' && value.constructor === Object && current.constructor === Object)
+				Object.assign(current, value);
+			else
+				s.obj[k] = value;
+		}))
+	, void 0);
+}
+/*
+function read_merge2<T extends Type2>(s: _stream|async._stream, specs: T): MaybePromise<void> {
+	if (isReader(specs))
+		return after(specs.get(s as any), value => {
+			Object.assign(s.obj, value);
+		});
+
+	return Object.entries(specs).reduce((acc: any, [k, v]) =>
 		after(acc, () => after(read2(s as any, v as any), value => { s.obj[k] = value; }))
 	, void 0);
 }
-
+*/
 export function If<T extends Type2, F extends Type2 | undefined = undefined>(test: TypeX2<boolean | number>, true_type: T, false_type?: F, discriminator = (value: any) => Discriminator(value, { true: true_type, false: false_type } as any)) {
 	type R = F extends Type2 ? ReadType<T | F> : ReadType<T | undefined>;
 	return {
@@ -810,7 +834,7 @@ export function Switch<KName extends string, K extends string | number, T extend
 		};
 	}
 }
-
+/*
 type DiscrimUnion<T extends Record<string | number, any>> = {
 	[J in keyof T & (string | number)]: [J, ReadType<T[J]>]
 }[keyof T & (string | number)];
@@ -834,16 +858,95 @@ export function DiscrimSpec<T extends Record<string | number, Type2>>(keySpec: T
 		})) as put2<R>
 	} as TypeT2<R>;
 }
+*/
 
-
-interface defered<T> {
-	then: () => MaybePromise<T>;
+export interface DeferedType<T> {
+	get(): MaybePromise<T>;
 }
-export function Defered<T extends Type2>(type: T): TypeT2<defered<ReadType<T>>> {
+
+export function resolved<T>(value: T): DeferedType<T> {
+	return { get: () => value };
+}
+
+export function Defered<T extends Type2>(type: T): TypeT2<DeferedType<ReadType<T>>> {
 	return {
-		get: (s => ({then: () => read2(s, type)})) as get2<defered<ReadType<T>>>,
-		put: ((s, v) => after(v, v => write2(s, type, v))) as put2<defered<ReadType<T>>>
+		get: (s => {
+			const obj = s.obj;
+			let cached: MaybePromise<ReadType<T>> | undefined;
+
+			return { get: () => {
+				if (!cached) {
+					s.obj = obj;
+					cached = read2(s, type);
+				}
+				return cached;
+			}};
+			
+		}) as get2<DeferedType<ReadType<T>>>,
+		put: ((s, v) => after(v.get(), v => write2(s, type, v))) as put2<DeferedType<ReadType<T>>>
 	};
+}
+
+export function Merge<T extends Type2>(type: T): TypeT2<MergeType<ReadType<T>>> {
+	type R = MergeType<ReadType<T>>;
+	return {
+		get: (s => after(read2(s, type), value => {
+			if (value && typeof value === 'object')
+				Object.assign(s.obj, value);
+			return {} as R;
+		})) as get2<R>,
+		put: ((s, v) => write2(s, type, v as ReadType<T>)) as put2<R>
+	};
+}
+
+export function Repeat<T extends Type2>(len: TypeX2<number>, type: T, split = (v: ReadType<T>) => [v]) {
+	type R = Partial<ReadType<T>>;
+	return {
+		get: (s => after(readx2(s, len), n => {
+			const obj0 = s.obj;
+			const obj = {} as any;
+			s.obj = obj;
+			let acc: any = undefined;
+			for (let i = 0; i < n; i++)
+				acc = after(acc, () => read_merge2(s, type));
+			return after(acc, () => {
+				s.obj = obj0;
+				return obj as R;
+			});
+		})) as get2<R>,
+		put: ((s, v) => {
+			const vs = split(v as ReadType<T>);
+			return after(writex2(s, len, vs.length), () => writen2(s, type, vs));
+		}) as put2<R>
+	};
+}
+
+export function RemainingRepeat<T extends Type2>(type: T, split = (v: ReadType<T>) => [v]) {
+	 type R = Partial<ReadType<T>>;
+	 return {
+		get: (s => {
+		 const obj0 = s.obj;
+		 const obj = {} as any;
+		 s.obj = obj;
+		 while (s.remaining() !== 0) {
+			const r = read_merge2(s, type);
+			if (r instanceof Promise)
+			 return asyncPath(r);
+		 }
+		 s.obj = obj0;
+		 return { merge: obj as R };
+
+		 async function asyncPath(first?: Promise<void>) {
+			if (first)
+			 await first;
+			while (s.remaining() !== 0)
+			 await read_merge2(s, type);
+			s.obj = obj0;
+			return { merge: obj as R };
+		 }
+		}) as get2<MergeType<R>>,
+		put: ((s, v) => writen2(s, type, split((v as MergeType<R>).merge as ReadType<T>))) as put2<MergeType<R>>
+	 };
 }
 
 //-----------------------------------------------------------------------------
