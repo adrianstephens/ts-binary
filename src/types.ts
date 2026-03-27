@@ -683,7 +683,7 @@ export function Try<T extends Record<string, Type2>>(type: T) {
 				return obj;
 			},
 			() => {
-				console.log('Reverting Try type');
+				//console.log('Reverting Try type');
 				s.seek(tell);
 				s.obj = obj.obj;
 				delete obj.obj;
@@ -710,7 +710,7 @@ export function Try<T extends Record<string, Type2>>(type: T) {
 			() => {
 			},
 			() => {
-				console.log('Reverting Try type');
+				//console.log('Reverting Try type');
 				s.seek(tell);
 			});
 		}) as put2<R>
