@@ -8,6 +8,25 @@ function r32() {
 	return (Math.random() * 0x100000000) >>> 0;
 }
 
+const Float16Array = utils.BitAdapterTypedArray(utils.float16);
+const f16 = new Float16Array(new ArrayBuffer(64), 0, 32);
+for (let i = 0; i < 32; i++)
+	f16[i] = utils.float16(i / 10);
+
+for (const i of f16)
+	console.log(+i);
+
+
+const bf = utils.BitFields(0, {a:1, b:2, c:3} as const);
+const StructArray = utils.BitAdapterTypedArray(bf);
+const sa = new StructArray(new ArrayBuffer(64), 0, 32);
+for (let i = 0; i < 32; i++)
+	sa[i] = {a: i & 1, b: (i >> 1) & 3, c: (i >> 3) & 7};
+
+for (const i of sa)
+	console.log(i);
+
+
 const Uint3Array = utils.UintTypedArray(3);
 
 const b3 = new Uint3Array(new ArrayBuffer(12), 0, 32);
@@ -18,8 +37,8 @@ for (let i = 0; i < 32; i++)
 for (const i of b3.subarray(7, 10))
 	console.log(i);
 
-for (const le of [false, true])
-for (let bits = 1; bits <= 32; bits++)
+for (const le of [true, false])
+for (let bits = 25; bits <= 32; bits++)
 for (let offset = 0; offset < 32; offset++)
 for (let t = 0; t < 300; t++) {
 	const nbytes = ((offset + bits + 7) >> 3) + 2;

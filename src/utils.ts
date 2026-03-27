@@ -4,11 +4,11 @@ export type MaybePromise<T> = T | Promise<T>;
 export type MaybePromise2<T, A extends boolean> = A extends true ? Promise<T> : T;
 export type NoPromise<T> = T extends PromiseLike<infer R> ? R : T;
 
-type UpTo8 = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8;
-type UpTo16 = UpTo8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16;
-type UpTo32 = UpTo16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32;
-type UpTo52 = UpTo32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52;
-type UpTo56 = UpTo52 | 53 | 54 | 55 | 56;
+export type UpTo8 = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8;
+export type UpTo16 = UpTo8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16;
+export type UpTo32 = UpTo16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32;
+export type UpTo52 = UpTo32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52;
+export type UpTo56 = UpTo52 | 53 | 54 | 55 | 56;
 
 type TupleOf<N extends number, T extends unknown[] = []> = T['length'] extends N ? T : TupleOf<N, [...T, unknown]>;
 type Mod8Tuple<T extends unknown[]> = T extends [unknown, unknown, unknown, unknown, unknown, unknown, unknown, unknown, ...infer R] ? Mod8Tuple<R> : T['length'];
@@ -24,25 +24,23 @@ export function after<V, R>(v: V, then: (value: Awaited<V>) => R): V extends Pro
 	return (v instanceof Promise ? v.then(then as (value: any) => R) : then(v as Awaited<V>)) as V extends PromiseLike<any> ? Promise<R> : R;
 }
 
-export function tryAfter<V, R>(v: V, then: (value: NoPromise<V>) => R, catchFn: (error: any) => R): V extends PromiseLike<any> ? Promise<R> : R {
-	if (v instanceof Promise)
-		return v.then(then).catch(catchFn) as V extends PromiseLike<any> ? Promise<R> : R;
-	try {
-		const result = then(v as NoPromise<V>);
-		return (result instanceof Promise ? result.catch(catchFn) : result) as V extends PromiseLike<any> ? Promise<R> : R;
-	} catch (e) {
-		return catchFn(e) as V extends PromiseLike<any> ? Promise<R> : R;
-	}
-}
-
-export function try2<V, R>(initialFn: () => V, then: (value: NoPromise<V>) => R, catchFn: (error: any) => R): V extends PromiseLike<any> ? Promise<R> : R {
+export function tryAfter<V, R>(initialFn: () => V, then: (value: NoPromise<V>) => R, catchFn: (error: any) => R): V extends PromiseLike<any> ? Promise<R> : R {
 	let v: V;
 	try {
 		v = initialFn();
 	} catch (e) {
 		return catchFn(e) as V extends PromiseLike<any> ? Promise<R> : R;
 	}
-	return tryAfter(v, then, catchFn);
+
+	if (v instanceof Promise)
+		return v.then(then).catch(catchFn) as V extends PromiseLike<any> ? Promise<R> : R;
+
+	try {
+		const result = then(v as NoPromise<V>);
+		return (result instanceof Promise ? result.catch(catchFn) : result) as V extends PromiseLike<any> ? Promise<R> : R;
+	} catch (e) {
+		return catchFn(e) as V extends PromiseLike<any> ? Promise<R> : R;
+	}
 }
 
 //-----------------------------------------------------------------------------
@@ -76,7 +74,7 @@ export function highestSetIndex(n: number | bigint): number {
 
 	function bits1024(x: number): number {
 		const b = Math.floor(Math.log2(x));
-		return 1n << BigInt(b) <= x ? b + 1 : b;
+		return 1n << BigInt(b) <= x ? b : b - 1;
 	}
 
 	function big(n: bigint) {
@@ -139,6 +137,103 @@ export function splitBinary(n : number | bigint, splits : number[]) {
 			b += s;
 			return r;
 		});
+}
+
+//-----------------------------------------------------------------------------
+// bitfields
+//-----------------------------------------------------------------------------
+
+interface Adapter<T, D> {
+	to(x: T):	D;
+	from(x: D):	T;
+}
+
+type BitInput<N>	= number extends N ? number | bigint : N extends 0 ? number | bigint : N extends UpTo52 ? number : bigint;
+type BitOutput<N>	= N extends BitAdapterN<infer _, infer D> ? D : N extends UpTo52 ? number : number extends N ? number | bigint : bigint;
+
+interface BitAdapter<T extends number|bigint, D> extends Adapter<T, D> {
+	bits: number;
+}
+interface BitAdapterN<N extends number, D> extends Adapter<BitInput<N>, D> {
+	bits: N;
+}
+
+export function BitField<N extends number, T>(bits: N, adapter: Adapter<BitInput<N>, T>): BitAdapterN<N, T> {
+	return { bits, ...adapter };
+}
+
+export function BitFields<N extends number, T extends Record<string, BitAdapterN<any, any> | number>>(bits: N, bitfields: T):
+	BitAdapter<BitInput<N>, {[K in keyof T]: BitOutput<T[K]>}>
+{
+	const total	= Object.values(bitfields).reduce((sum, bf) => sum + (typeof bf === 'number' ? bf : bf.bits), 0) as number;
+	if (bits === 0)
+		bits = total as N;
+	else if (bits < total)
+		throw new Error(`BitFields: total bits of fields (${total}) exceed specified bits (${bits})`);
+
+	if (bits > 32) {
+		return {
+			bits,
+
+			to(x: number|bigint) {
+				let y = BigInt(x);
+				const obj = {} as Record<string, bigint>;
+				for (const i in bitfields) {
+					const bf	= bitfields[i];
+					const bits	= typeof bf === 'number' ? bf : bf.bits;
+					const v		= y & ((1n << BigInt(bits)) - 1n);
+					const v2	= bits <= 52 ? Number(v) : v;
+					y >>= BigInt(bits);
+					obj[i] = typeof bf === 'number' ? v2 : bf.to(v2);
+				}
+				return obj as any;
+			},
+			from(obj: Record<string, any>) {
+				let x	= 0n;
+				let bit = 0;
+				for (const i in bitfields) {
+					const bf	= bitfields[i];
+					const bits	= typeof bf === 'number' ? bf : bf.bits;
+					const v		= obj[i];
+					const raw	= typeof bf === 'number' ? v : bf.from(v);
+					x |= (BigInt(raw) & ((1n << BigInt(bits)) - 1n)) << BigInt(bit);
+					bit += bits;
+				}
+				return (bits <= 52 ? Number(x) : x) as BitInput<N>;
+			},
+		};
+	} else {
+		return {
+			bits,
+
+			to(x: number|bigint) {
+				const obj = {} as Record<string, number>;
+				let y = Number(x);
+				for (const i in bitfields) {
+					const bf	= bitfields[i];
+					const bits	= typeof bf === 'number' ? bf : bf.bits;
+					const v		= y & ((1 << bits) - 1);
+					const v2	= bits <= 52 ? v : BigInt(v);
+					y >>= bits;
+					obj[i] = typeof bf === 'number' ? v : bf.to(v2);
+				}
+				return obj as any;
+			},
+			from(obj: Record<string, any>) {
+				let x	= 0;
+				let bit = 0;
+				for (const i in bitfields) {
+					const bf	= bitfields[i];
+					const bits	= typeof bf === 'number' ? bf : bf.bits;
+					const v		= obj[i];
+					const raw	= typeof bf === 'number' ? v : bf.from(v);
+					x |= (Number(raw) & ((1 << bits) - 1)) << bit;
+					bit += bits;
+				}
+				return x as BitInput<N>;
+			},
+		};
+	}
 }
 
 //-----------------------------------------------------------------------------
@@ -209,7 +304,7 @@ export function getBigUint(dv: DataView, offset: number, len: number, littleEndi
 			len -= 4;
 			result = (result << 32n) | BigInt(dv.getUint32(offset + len, true));
 		}
-		return result << BigInt(len * 8) + BigInt(getUint(dv, offset, len, true));
+		return (result << BigInt(len * 8)) + BigInt(getUint(dv, offset, len, true));
 	} else {
 		const end = offset + len;
 		while (offset + 7 <= end) {
@@ -308,120 +403,10 @@ export function putBigUintBits(dv: DataView, offset: number, v: bigint, len: num
 //	float
 //-----------------------------------------------------------------------------
 
-type FloatRaw<M extends number>			= number extends M ? number | bigint : M extends UpTo32 ? number : bigint;
-type FloatMantissa<M extends number>	= number extends M ? number | bigint : M extends UpTo52 ? number : bigint;
-
 interface FloatParts<N extends number|bigint = number|bigint> {
 	mantissa:	N,
 	exponent:	number,
 	sign:		number;
-}
-
-const FloatParts = {
-	zero:	{mantissa: 0, exponent: 0, sign: 0},
-	one:	{mantissa: 1, exponent: 0, sign: 0},
-	inf:	{mantissa: 0, exponent: Infinity, sign: 0},
-	integer(n: number | bigint) { return {mantissa: n, exponent: 0, sign: 0}; },
-
-	add(a: FloatParts, b: FloatParts) {
-		if (a.exponent > b.exponent)
-			[a, b] = [b,a];
-		if (b.exponent === Infinity)
-			return b;
-		const am = BigInt(a.mantissa);
-		const bm = BigInt(b.mantissa) << BigInt(b.exponent - a.exponent);
-		return a.sign === b.sign
-			? {mantissa: am + bm, exponent: a.exponent, sign: a.sign}
-			: am >= bm
-			? {mantissa: am - bm, exponent: a.exponent, sign: a.sign}
-			: {mantissa: bm - am, exponent: a.exponent, sign: b.sign};
-	},
-	mul(a: FloatParts, b: FloatParts) {
-		return {mantissa: BigInt(a.mantissa) * BigInt(b.mantissa), exponent: a.exponent + b.exponent, sign: a.sign ^ b.sign};
-	},
-	div(a: FloatParts, b: FloatParts, precision: number) {
-		return !b.mantissa
-			? {mantissa: 0, exponent: Infinity, sign: a.sign ^ b.sign}
-			: {mantissa: (BigInt(a.mantissa) << BigInt(precision)) / BigInt(b.mantissa), exponent: a.exponent - b.exponent - precision, sign: a.sign ^ b.sign};
-	},
-
-	splitter<M extends number>(mbits: M, ebits: number, ebias = (1 << (ebits - 1)) - 1): (i: number | bigint) => FloatParts<FloatMantissa<M>> {
-		type MT = FloatMantissa<M>;
-		const emask = (1 << ebits) - 1;
-		ebias += mbits;
-
-		if (mbits > 32) {
-			const mimp	= 1n << BigInt(mbits);
-			return i => {
-				const n		= BigInt(i);
-				const rest	= Number(n >> BigInt(mbits));
-				const exp	= rest & emask;
-				const mantissa = (n & (mimp - 1n)) + (exp ? mimp : 0n);
-				return {mantissa: (mbits > 52 ? mantissa : Number(mantissa)) as MT, exponent: exp === emask ? Infinity : (exp ? exp : 1) - ebias, sign: rest >>> ebits};
-			};
-		} else {
-			const mimp	= 1 << mbits;
-			return i => {
-				const n		= Number(i);
-				const rest	= n >> mbits;
-				const exp	= rest & emask;
-				const mantissa = (n & (mimp - 1)) + (exp ? mimp : 0);
-				return {mantissa: mantissa as MT, exponent: exp === emask ? Infinity : (exp ? exp : 1) - ebias, sign: rest >>> ebits};
-			};
-		}
-	},
-
-	packer<M extends number>(mbits: M, ebits: number, ebias = (1 << (ebits - 1)) - 1): (arg: {mantissa: number|bigint, exponent: number, sign: number}) => FloatRaw<M> {
-		const emask = (1 << ebits) - 1;
-		ebias += mbits;
-
-		if (mbits > 32) {
-			const mimp	= 1n << BigInt(mbits);
-			return ({mantissa, exponent, sign}) => {
-				let shift = highestSetIndex(mantissa) - mbits;
-				exponent += ebias + shift;
-				if (exponent >= emask) {
-					shift		= 0;
-					mantissa	= 0n;
-					exponent	= emask;
-				} else if (exponent <= 0) {
-					shift		-= exponent - 1;
-					exponent	= 0;
-				}
-				mantissa = shift < 0 ? BigInt(mantissa) << BigInt(-shift) : BigInt(mantissa) >> BigInt(shift);
-				return (BigInt((sign << ebits) | exponent) << BigInt(mbits) | (mantissa & (mimp - 1n))) as FloatRaw<M>;
-			};
-		} else {
-			const mimp	= 1 << mbits;
-			return ({mantissa, exponent, sign}) => {
-				let shift = highestSetIndex(mantissa) - mbits;
-				exponent += ebias + shift;
-				if (exponent >= emask) {
-					shift		= 0;
-					mantissa	= 0;
-					exponent	= emask;
-				} else if (exponent <= 0) {
-					shift		-= exponent - 1;
-					exponent	= 0;
-				}
-				mantissa = shift < 0 ? Number(mantissa) << -shift : Number(BigInt(mantissa) >> BigInt(shift));
-				return (((sign << ebits) | exponent) << mbits | (mantissa & (mimp - 1))) as FloatRaw<M>;
-			};
-		}
-	}
-};
-
-const splitN	= FloatParts.splitter(52, 11);
-const packN		= FloatParts.packer(52, 11);
-const NumberDV	= new DataView(new ArrayBuffer(8));
-
-function NumberToRep(f: number) {
-	NumberDV.setFloat64(0, f, true);
-	return NumberDV.getBigUint64(0, true);
-}
-function RepToNumber(i: bigint): number {
-	NumberDV.setBigUint64(0, i, true);
-	return NumberDV.getFloat64(0, true);
 }
 
 export interface FloatInstance<R extends number | bigint, N extends number | bigint = R> {
@@ -438,79 +423,161 @@ export interface FloatInstance<R extends number | bigint, N extends number | big
 	div(b: this):	this;
 }
 
-interface Float<M extends number = number, R extends number | bigint = FloatRaw<M>, N extends number | bigint = FloatMantissa<M>> {
-	mbits: 		M;
-	ebits: 		number;
-	ebias:		number;
-	sbit: 		boolean;
-	bits: 		number;
-	(value: number):	FloatInstance<R, N>;
-	raw(i: R):			FloatInstance<R, N>;
-	parts(mantissa: N, exp: number, sign: number): FloatInstance<R, N>;
+interface Float<R extends number | bigint, M extends number|bigint = R> extends BitAdapter<R, FloatInstance<R, number|bigint>> {
+	bits: number;
+	to(i: R):			FloatInstance<R, M>;
+	from(x: FloatInstance<R, M>):	R;
+
+	(value: number):	FloatInstance<R, M>;
+	parts(mantissa: M, exp: number, sign: number): FloatInstance<R, M>;
+	split(raw: R): FloatParts<M>;
+	pack(parts: FloatParts): R;
 }
 
-export function Float<M extends number>(mbits: M, ebits: number, ebias = (1 << (ebits - 1)) - 1, sbit = true): Float<M> {
+const FloatN	= Float(52, 11) as Float<bigint, number>;
+const NumberDV	= new DataView(new ArrayBuffer(8));
+
+function NumberToRep(f: number) {
+	NumberDV.setFloat64(0, f, true);
+	return NumberDV.getBigUint64(0, true);
+}
+function RepToNumber(i: bigint): number {
+	NumberDV.setBigUint64(0, i, true);
+	return NumberDV.getFloat64(0, true);
+}
+
+function floatAdd(a: FloatParts, b: FloatParts) {
+	if (a.exponent > b.exponent)
+		[a, b] = [b,a];
+	if (b.exponent === Infinity)
+		return b;
+	const am = BigInt(a.mantissa);
+	const bm = BigInt(b.mantissa) << BigInt(b.exponent - a.exponent);
+	return a.sign === b.sign
+		? {mantissa: am + bm, exponent: a.exponent, sign: a.sign}
+		: am >= bm
+		? {mantissa: am - bm, exponent: a.exponent, sign: a.sign}
+		: {mantissa: bm - am, exponent: a.exponent, sign: b.sign};
+}
+
+function floatMul(a: FloatParts, b: FloatParts) {
+	return {mantissa: BigInt(a.mantissa) * BigInt(b.mantissa), exponent: a.exponent + b.exponent, sign: a.sign ^ b.sign};
+}
+
+function floatDiv(a: FloatParts, b: FloatParts, precision: number) {
+	return !b.mantissa
+		? {mantissa: 0, exponent: Infinity, sign: a.sign ^ b.sign}
+		: {mantissa: (BigInt(a.mantissa) << BigInt(precision)) / BigInt(b.mantissa), exponent: a.exponent - b.exponent - precision, sign: a.sign ^ b.sign};
+}
+
+export function Float(mbits: number, ebits: number, ebias = (1 << (ebits - 1)) - 1, sbit = true) {
+	const bits = BitFields(0, {
+		mantissa: mbits,
+		exponent: ebits as UpTo32,//BitField(ebits, {to: (e:number) => e - ebias, from: e => e + ebias}),
+		sign: (sbit ? 1 : 0) as UpTo16,
+	});
 	type Instance = FloatInstance<number | bigint, number | bigint>;
 
-	const split	= FloatParts.splitter(mbits, ebits, ebias);
-	const pack	= FloatParts.packer(mbits, ebits, ebias);
 	const signN	= sbit ? 1 << (mbits + ebits) : 0;
 	const signB = sbit ? 1n << BigInt(mbits + ebits) : 0n;
+
+	const emax	= (1 << ebits) - 1;
+	const mimpN	= 2 ** mbits;
+	const mimpB	= 1n << BigInt(mbits);
+	ebias += mbits;
+
+	const splitAdjust = (parts: {mantissa: number|bigint, exponent: number, sign: number}) => {
+		if (parts.exponent === emax)
+			parts.exponent = Infinity;
+		else if (parts.exponent === 0)
+			parts.exponent = 1 - ebias;
+		else {
+			parts.exponent -= ebias;
+			if (typeof parts.mantissa === "bigint")
+				parts.mantissa += mimpB;
+			else
+				parts.mantissa += mimpN;
+		}
+		return parts;
+	};
+
+	const packAdjust = (parts: {mantissa: number|bigint, exponent: number, sign: number}) => {
+		let shift = highestSetIndex(parts.mantissa) - mbits;
+		parts.exponent += ebias + shift;
+		if (parts.exponent >= emax) {
+			shift			= 0;
+			parts.mantissa	= 0;
+			parts.exponent	= emax;
+		} else if (parts.exponent <= 0) {
+			shift			-= parts.exponent - 1;
+			parts.exponent	= 0;
+		}
+		const mantissa = shift < 0 ? BigInt(parts.mantissa) << BigInt(-shift) : BigInt(parts.mantissa) >> BigInt(shift);
+		parts.mantissa = typeof parts.mantissa === "bigint" ? mantissa : Number(mantissa);
+		return parts;
+	};
 
 	const prototype = mbits === 52 && ebits === 11 && ebias === 1023 && sbit ? {
 		raw: 0n,
 		from(x: number)		{ return rawN(x); },
-		parts()				{ return split(this.raw); },
+		parts()				{ return splitAdjust(bits.to(this.raw)); },
 		valueOf()			{ return RepToNumber(this.raw); },
 		toString()			{ return this.valueOf().toString(); },
-		abs() 				{ return raw(this.raw & ~signB); },
-		neg() 				{ return raw(this.raw ^ signB); },
+		abs() 				{ return make(this.raw & ~signB); },
+		neg() 				{ return make(this.raw ^ signB); },
 		add(b)				{ return rawN(+this + +b); },
 		sub(b)				{ return rawN(+this - +b); },
 		mul(b)				{ return rawN(+this * +b); },
 		div(b)				{ return rawN(+this / +b); },
-	} as FloatInstance<bigint, number> : mbits > 32 ? {
+	} as FloatInstance<bigint, number> : bits.bits > 32 ? {
 		raw: 0n,
-		from(x: number)		{ return rawP(splitN(NumberToRep(x))); },
-		parts()				{ return split(this.raw); },
-		valueOf()			{ return RepToNumber(packN(split(this.raw))); },
+		from(x: number)		{ return rawP(FloatN.split(NumberToRep(x))); },
+		parts()				{ return splitAdjust(bits.to(this.raw)); },
+		valueOf()			{ return RepToNumber(FloatN.pack(splitAdjust(bits.to(this.raw)))); },
 		toString()			{ return this.valueOf().toString(); },
-		abs() 				{ return raw(this.raw & ~signB); },
-		neg() 				{ return raw(this.raw ^ signB); },
-		add(b)				{ return rawP(FloatParts.add(this.parts(), b.parts())); },
-		sub(b)				{ return rawP(FloatParts.add(this.parts(), b.neg().parts())); },
-		mul(b)				{ return rawP(FloatParts.mul(this.parts(), b.parts())); },
-		div(b)				{ return rawP(FloatParts.div(this.parts(), b.parts(), mbits)); },
+		abs() 				{ return make(this.raw & ~signB); },
+		neg() 				{ return make(this.raw ^ signB); },
+		add(b)				{ return rawP(floatAdd(this.parts(), b.parts())); },
+		sub(b)				{ return rawP(floatAdd(this.parts(), b.neg().parts())); },
+		mul(b)				{ return rawP(floatMul(this.parts(), b.parts())); },
+		div(b)				{ return rawP(floatDiv(this.parts(), b.parts(), mbits)); },
 	} as FloatInstance<bigint, bigint> : {
-		raw: 0,
-		from(x: number)		{ return rawP(splitN(NumberToRep(x))); },
-		parts()				{ return split(this.raw); },
-		valueOf()			{ return RepToNumber(packN(split(this.raw))); },
+		from(x: number)		{ return rawP(FloatN.split(NumberToRep(x))); },
+		parts()				{ return splitAdjust(bits.to(this.raw)); },
+		valueOf()			{ return RepToNumber(FloatN.pack(splitAdjust(bits.to(this.raw)))); },
 		toString()			{ return this.valueOf().toString(); },
-		abs() 				{ return raw(this.raw & ~signN); },
-		neg() 				{ return raw(this.raw ^ signN); },
-		add(b)				{ return rawP(FloatParts.add(this.parts(), b.parts())); },
-		sub(b)				{ return rawP(FloatParts.add(this.parts(), b.neg().parts())); },
-		mul(b)				{ return rawP(FloatParts.mul(this.parts(), b.parts())); },
-		div(b)				{ return rawP(FloatParts.div(this.parts(), b.parts(), mbits)); },
+		abs() 				{ return make(this.raw & ~signN); },
+		neg() 				{ return make(this.raw ^ signN); },
+		add(b)				{ return rawP(floatAdd(this.parts(), b.parts())); },
+		sub(b)				{ return rawP(floatAdd(this.parts(), b.neg().parts())); },
+		mul(b)				{ return rawP(floatMul(this.parts(), b.parts())); },
+		div(b)				{ return rawP(floatDiv(this.parts(), b.parts(), mbits)); },
 	} as FloatInstance<number, number>;
 
-	function raw(i: number|bigint) {
+	function make(i: number|bigint) {
 		const obj = Object.create(prototype) as Instance;
 		obj.raw = i;
 		return obj;
 	}
-	const rawN	= (f: number) => raw(NumberToRep(f));
-	const rawP	= (p: FloatParts) => raw(pack(p));
+	const rawN	= (f: number) => make(NumberToRep(f));
+	const rawP	= (p: FloatParts) => make(bits.from(packAdjust(p)));
 
 	return Object.assign(prototype.from, {
-		mbits,	ebits, ebias, sbit,
-		bits:	mbits + ebits + (sbit ? 1 : 0),
-		raw,
-		parts(mantissa: number|bigint, exponent: number, sign: number) {
-			return raw(pack({mantissa, exponent, sign}));
+		bits: bits.bits,
+		to: make,
+		from(x: Instance) {
+			return x.raw;
+		},
+		parts(mantissa: number, exponent: number, sign: number) {
+			return make(bits.from(packAdjust({mantissa, exponent, sign})));
+		},
+		split(raw: number|bigint) {
+			return splitAdjust(bits.to(raw));
+		},
+		pack(parts: FloatParts) {
+			return bits.from(packAdjust(parts));
 		}
-	}) as unknown as Float<M>;
+	}) as unknown as Float<number | bigint>;
 }
 
 export const float8_e4m3 = Float(3, 4, 7);
@@ -519,6 +586,7 @@ export const float16	= Float(10, 5, 15);
 export const float32	= Float(23, 8);
 export const float64	= Float(52, 11);
 export const float128	= Float(112, 15);
+
 
 //-----------------------------------------------------------------------------
 //	buffers
@@ -677,57 +745,50 @@ export function UintTypedArray<N extends number>(bits: N, be?: boolean): ViewMak
 	}
 }
 
-export function IntTypedArray<N extends number>(bits: N, be?: boolean): ViewMaker<TypedArray<NumberT<N>>> {
+export function BitAdapterTypedArray<D>(adapter: BitAdapter<any, D>, be?: boolean): ViewMaker<TypedArray<D>> {
+	const bits	= adapter.bits;
 	if ((bits & 7) === 0) {
-		const bytes = (bits + 7) >> 3;
-		return TypedArray<NumberT<N>>((buffer: ArrayBufferLike, byteOffset: number, begin: number, length: number) => {
+		const bytes	= (bits + 7) >> 3;
+		return TypedArray((buffer: ArrayBufferLike, byteOffset: number, begin: number, length: number) => {
 			const byteLength = length * bytes;
 			const dv = new DataView(buffer, byteOffset + begin * bytes, byteLength);
-			return (bytes > 7 ? {
+			return bits > 32 ? {
 				byteLength,
-				get: (index: number) => toSignedBig(getBigUint(dv, index * bytes, bytes, !be), bits),
-				set: (index: number, value: bigint) => putBigUint(dv, index * bytes, value, bytes, !be),
+				get(index: number)				{ return adapter.to(getBigUint(dv, index * bytes, bytes, !be)); },
+				set(index: number, value: any)	{ putBigUint(dv, index * bytes, adapter.from(value) as bigint, bytes, !be); }
 			} : {
 				byteLength,
-				get: (index: number) => toSigned(getUint(dv, index * bytes, bytes, !be), bits),
-				set: (index: number, value: number) => putUint(dv, index * bytes, value, bytes, !be),
-			}) as any;
+				get(index: number)				{ return adapter.to(getUint(dv, index * bytes, bytes, !be)); },
+				set(index: number, value: any)	{ putUint(dv, index * bytes, adapter.from(value) as number, bytes, !be); }
+			};
 		}, bytes);
 	} else {
-		return TypedArray<NumberT<N>>((buffer: ArrayBufferLike, byteOffset: number, begin: number, length: number) => {
+		return TypedArray((buffer: ArrayBufferLike, byteOffset: number, begin: number, length: number) => {
 			const shift = (begin * bits) & 7;
 			const byteLength = (shift + length * bits + 7) >> 3;
 			const dv = new DataView(buffer, byteOffset + ((begin * bits) >> 3), byteLength);
-			return (bits > 32 ? {
+			return bits > 32 ? {
 				byteLength,
-				get: (index: number) => toSignedBig(getBigUintBits(dv, shift + index * bits, bits, !be), bits),
-				set: (index: number, value: bigint) => putBigUintBits(dv, shift + index * bits, value, bits, !be),
+				get(index: number)				{ return adapter.to(getBigUintBits(dv, shift + index * bits, bits, !be)); },
+				set(index: number, value: any)	{ putBigUintBits(dv, shift + index * bits, adapter.from(value) as bigint, bits, !be); }
 			} : {
 				byteLength,
-				get: (index: number) => toSigned(getUintBits(dv, shift + index * bits, bits, !be), bits),
-				set: (index: number, value: number) => putUintBits(dv, shift + index * bits, value, bits, !be),
-			}) as any;
+				get(index: number)				{ return adapter.to(getUintBits(dv, shift + index * bits, bits, !be)); },
+				set(index: number, value: any)	{ putUintBits(dv, shift + index * bits, adapter.from(value) as number, bits, !be); }
+			};
 		});
 	}
 }
 
-export function FloatTypedArray<M extends number>(F: Float<M>, be?: boolean) {
-	const bytes = (F.bits + 7) >> 3;
-	return TypedArray((buffer: ArrayBufferLike, byteOffset: number, begin: number, length: number) => {
-		const byteLength = length * bytes;
-		const dv = new DataView(buffer, byteOffset + begin * bytes, byteLength);
-		return F.mbits > 32 ? {
-			byteLength,
-			get: index => F.raw(getBigUint(dv, index * bytes, bytes, !be) as FloatRaw<M>),
-			set: (index, value) => putBigUint(dv, index * bytes, value.raw as bigint, bytes, !be),
-		} : {
-			byteLength,
-			get: index => F.raw(getUint(dv, index * bytes, bytes, !be) as FloatRaw<M>),
-			set: (index, value) => putUint(dv, index * bytes, value.raw as number, bytes, !be),
-		};
-	}, bytes);
-}
+type INumberT<N extends number> = N extends UpTo32 ? number : bigint;
 
+export function IntTypedArray<N extends number>(bits: N, be?: boolean): ViewMaker<TypedArray<INumberT<N>>> {
+	const to = bits > 32
+		? (x: bigint) => toSignedBig(x, bits)
+		: (x: number) => toSigned(x, bits);
+
+	return BitAdapterTypedArray({bits, to, from: (x: any) => x} as unknown as BitAdapter<INumberT<N>, INumberT<N>>, be);
+}
 
 type DataViewType = 'Uint8' | 'Int8' | 'Uint16' | 'Uint32' | 'BigUint64' | 'Int16' | 'Int32' | 'BigInt64' | 'Float32' | 'Float64';
 type DataViewReturnType<T extends DataViewType> = T extends 'BigUint64' ? bigint : T extends 'BigInt64' ? bigint : number;

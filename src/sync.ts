@@ -171,10 +171,18 @@ type TupleReadType<T extends readonly unknown[]> = T extends readonly [infer Fir
 	: [];
 
 
-type CorrelatedHelper<T> = {[K in keyof T]: T[K] extends { get: (...args: any) => infer R } ? (NoPromise<R> extends CorrelatedMerge<infer U> ? U : never) : never}[keyof T];
+type AllCorrelated<T>	= {[K in keyof T]: T[K] extends { get: (...args: any) => infer R } ? (NoPromise<R> extends CorrelatedMerge<infer U> ? U : never) : never}[keyof T];
+type AllMerged<T>		= {[K in keyof T]: T[K] extends { get: (...args: any) => infer R } ? (NoPromise<R> extends MergeType<infer U> ? U : never) : never }[keyof T];
+
+//type UnionProp<T, K extends PropertyKey> = T extends any ? (K extends keyof T ? T[K] : never) : never;
 
 type FixIntersection3<T, I> = {
-	[K in keyof I]: I[K] extends never ? (K extends keyof T ? T[K] extends undefined ? T[K] : Exclude<T[K], undefined> : I[K]) : I[K];
+	[K in keyof I]: I[K] extends never ? (T extends any ? (K extends keyof T ? (T[K] extends undefined ? T[K] : Exclude<T[K], undefined>) : I[K]) : I[K]) : I[K];
+//	[K in keyof I]: I[K] extends never ? (UnionProp<T, K> extends undefined ? UnionProp<T, K> : Exclude<UnionProp<T, K>, undefined>) : I[K];
+//	[K in keyof I]: I[K] extends never ? T[K as keyof T] : I[K];
+//	[K in keyof T]: K extends keyof I ? I[K] extends never ? T[K] : I[K] : T[K];
+//	[K in keyof I]: I[K] extends never ? (T & { [P in K]: unknown })[K] : I[K];
+//	[K in keyof I]: I[K] extends never ? UnionProp<T, K> : I[K];
 };
 
 type FixIntersection<T> = FixIntersection3<T, UnionToIntersection<T>>;
@@ -182,16 +190,22 @@ type FixIntersection<T> = FixIntersection3<T, UnionToIntersection<T>>;
 export type ReadType<T> = T extends {new (s: infer _S extends _stream): infer R} ? R
 	: T extends { get: (s: any) => infer R } ? NoPromise<R>
 	: T extends readonly unknown[] ? TupleReadType<T>
-	: T extends object ? FixIntersection<Exclude<
-		{ [K in keyof T as
-			  T[K] extends { new (...args: any): any } ? K
-			: T[K] extends { get: (...args: any) => infer R } ? NoPromise<R> extends undefined ? never : NoPromise<R> extends MergeBase<any> ? never : K
-			: K
-		]: ReadType<T[K]> }
-		| {
-			[K in keyof T]: T[K] extends { get: (...args: any) => infer R } ? (NoPromise<R> extends MergeType<infer U> ? U : never) : never
-		}[keyof T], never>>
-		& ([CorrelatedHelper<T>] extends [never] ? unknown : CorrelatedHelper<T>)
+	: T extends object ? (
+		[AllMerged<T>] extends [never] ?
+			{ [K in keyof T as
+				T[K] extends { new (...args: any): any } ? K
+				: T[K] extends { get: (...args: any) => infer R } ? NoPromise<R> extends undefined ? never : NoPromise<R> extends MergeBase<any> ? never : K
+				: K
+			]: ReadType<T[K]> }
+		: FixIntersection<Exclude<		
+			{ [K in keyof T as
+				T[K] extends { new (...args: any): any } ? K
+				: T[K] extends { get: (...args: any) => infer R } ? NoPromise<R> extends undefined ? never : NoPromise<R> extends MergeBase<any> ? never : K
+				: K
+			]: ReadType<T[K]> }
+			| AllMerged<T>,
+			never>>
+		) & ([AllCorrelated<T>] extends [never] ? unknown : AllCorrelated<T>)
 	: never;
 
 

@@ -297,12 +297,12 @@ export function Float(mbits: number, ebits: number, ebias = (1 << (ebits - 1)) -
 	if (sbit && mbits === 23 && ebits === 8 && ebias === 127)
 		return endian(_Float32, be);
 	const F = utils.Float(mbits, ebits, ebias, sbit);
-	return as(UINT(F.bits, be), x => +F.raw(x), y => F(y).raw as any);
+	return as(UINT(F.bits, be), x => +F.to(x), y => F(y).raw as any);
 }
 
 export function FloatRaw(mbits: number, ebits: number, ebias = (1 << (ebits - 1)) - 1, sbit = true, be?: boolean)	{
 	const F = utils.Float(mbits, ebits, ebias, sbit);
-	return as(UINT(F.bits, be), x => F.raw(x), y => y.raw as any);
+	return as(UINT(F.bits, be), x => F.to(x), y => F(+y).raw as any);
 }
 export const Float16	= Float(10, 5, 15, true), Float16_LE = Float(10, 5, 15, true, false), Float16_BE = Float(10, 5, 15, true, true);
 
@@ -464,18 +464,6 @@ export function RemainingArray<T extends Type2>(type: T): TypeT2<ReadType<T>[]> 
 				}
 				return result;
 			}
-/*
-			const readNext = (): any =>
-				s.remaining() === 0
-					? result
-					: tryAfter(read2(s, type), value => {
-						if (value === undefined)
-							return result;
-						result.push(value);
-						return readNext();
-					}, () => result);
-			return readNext();
-			*/
 		}) as get2<R>,
 		put: ((s, v) => writen2(s, type, v)) as put2<R>
 	};
@@ -678,23 +666,24 @@ export function Try<T extends Record<string, Type2>>(type: T) {
 		get: (s => {
 			const obj = {obj: s.obj} as any;
 			s.obj	= obj;
-			let acc: any = undefined;
 			let tell = s.tell();
-			try {
+			tryAfter(() => {
+				let acc: any = undefined;
 				for (const [k, t] of Object.entries(type)) {
 					acc = after(acc, () => {
 						tell = s.tell();
 						return after(read2(s, t), value => obj[k] = value);
 					});
 				}
-			} catch (e) {
-				acc = Promise.reject(e);
-			}
-			return tryAfter(acc, () => {
+				return acc;
+			},
+			() => {
 				s.obj = obj.obj;
 				delete obj.obj;
 				return obj;
-			}, () => {
+			},
+			() => {
+				console.log('Reverting Try type');
 				s.seek(tell);
 				s.obj = obj.obj;
 				delete obj.obj;
@@ -704,22 +693,30 @@ export function Try<T extends Record<string, Type2>>(type: T) {
 
 		put: ((s, v) => {
 			s.obj = v;
-			let acc: any = undefined;
 			let tell = s.tell();
-			for (const [k, t] of Object.entries(type)) {
-				const v1 = (v as any)[k];
-				if (v1 === undefined)
-					break;
-				acc = after(acc, () => {
-					tell = s.tell();
-					return write2(s, t, v1);
-				});
-			}
-			return tryAfter(acc, () => undefined, () => s.seek(tell));
+			tryAfter(() => {
+				let acc: any = undefined;
+				for (const [k, t] of Object.entries(type)) {
+					const v1 = (v as any)[k];
+					if (v1 === undefined)
+						break;
+					acc = after(acc, () => {
+						tell = s.tell();
+						return write2(s, t, v1);
+					});
+				}
+				return acc;
+			},
+			() => {
+			},
+			() => {
+				console.log('Reverting Try type');
+				s.seek(tell);
+			});
 		}) as put2<R>
 	} as TypeT2<R>;
 }
-
+/*
 export function Maybe<T>(type: TypeT2<T>): TypeT2<T | undefined> {
 	return {
 		get: ((s => {
@@ -735,7 +732,7 @@ export function Maybe<T>(type: TypeT2<T>): TypeT2<T | undefined> {
 		}) as put2<T | undefined>
 	};
 }
-
+*/
 //function read_merge<T extends TypeReader>(s: _stream, specs: T) {
 //	Object.entries(specs).forEach(([k, v]) => s.obj[k] = isReader(v) ? v.get(s) : read(s, v as TypeReader));
 //}
@@ -900,7 +897,7 @@ export function Merge<T extends Type2>(type: T): TypeT2<MergeType<ReadType<T>>> 
 }
 
 export function Repeat<T extends Type2>(len: TypeX2<number>, type: T, split = (v: ReadType<T>) => [v]) {
-	type R = Partial<ReadType<T>>;
+	type R = MergeType<Partial<ReadType<T>>>;
 	return {
 		get: (s => after(readx2(s, len), n => {
 			const obj0 = s.obj;
@@ -911,7 +908,7 @@ export function Repeat<T extends Type2>(len: TypeX2<number>, type: T, split = (v
 				acc = after(acc, () => read_merge2(s, type));
 			return after(acc, () => {
 				s.obj = obj0;
-				return obj as R;
+				return obj;
 			});
 		})) as get2<R>,
 		put: ((s, v) => {
@@ -922,7 +919,7 @@ export function Repeat<T extends Type2>(len: TypeX2<number>, type: T, split = (v
 }
 
 export function RemainingRepeat<T extends Type2>(type: T, split = (v: ReadType<T>) => [v]) {
-	 type R = Partial<ReadType<T>>;
+	 type R = MergeType<Partial<ReadType<T>>>;
 	 return {
 		get: (s => {
 		 const obj0 = s.obj;
@@ -934,7 +931,7 @@ export function RemainingRepeat<T extends Type2>(type: T, split = (v: ReadType<T
 			 return asyncPath(r);
 		 }
 		 s.obj = obj0;
-		 return { merge: obj as R };
+		 return obj;
 
 		 async function asyncPath(first?: Promise<void>) {
 			if (first)
@@ -942,10 +939,10 @@ export function RemainingRepeat<T extends Type2>(type: T, split = (v: ReadType<T
 			while (s.remaining() !== 0)
 			 await read_merge2(s, type);
 			s.obj = obj0;
-			return { merge: obj as R };
+			return obj;
 		 }
-		}) as get2<MergeType<R>>,
-		put: ((s, v) => writen2(s, type, split((v as MergeType<R>).merge as ReadType<T>))) as put2<MergeType<R>>
+		}) as get2<R>,
+		put: ((s, v) => writen2(s, type, split(v as ReadType<T>))) as put2<R>
 	 };
 }
 
@@ -964,10 +961,12 @@ export type adapter<T, D, O=void> = adapter0<T, D, O> | adapter1<T, D, O>;
 function isConstructor<T, D, O>(maker: adapter1<T,D,O>): maker is new (arg: T, opt: O) => D {
 	return maker.prototype?.constructor.name;
 }
-export function make<T, D, O>(maker: adapter<T,D,O>, x: T, opt?: O): D {
+//export 
+function make<T, D, O>(maker: adapter<T,D,O>, x: T, opt?: O): D {
 	return typeof maker === 'function' ? (isConstructor(maker) ? new maker(x, opt as O): maker(x, opt as O)) : maker.to(x, opt as O);
 }
-export function unmake<T, D, O>(maker: adapter<T,D,O>, x: D, from?: (x: D)=>T, opt?: O) {
+//export 
+function unmake<T, D, O>(maker: adapter<T,D,O>, x: D, from?: (x: D)=>T, opt?: O) {
 	return typeof maker === 'function' ? (from ? from(x) : x) : maker.from(x, opt as O);
 }
 

@@ -116,16 +116,16 @@ test('Float16: infinities and NaN roundtrip', () => {
 	//assert.equal(nan & 0x7c00, 0x7c00);
 	//assert.notEqual(nan & 0x03ff, 0);
 
-	assert.equal(f16.raw(0x7c00).valueOf(), Infinity);
-	assert.equal(f16.raw(0xfc00).valueOf(), -Infinity);
-	//assert.ok(Number.isNaN(f16.raw(nan).valueOf()));
+	assert.equal(f16.to(0x7c00).valueOf(), Infinity);
+	assert.equal(f16.to(0xfc00).valueOf(), -Infinity);
+	//assert.ok(Number.isNaN(f16.to(nan).valueOf()));
 });
 
 test('Float16: denormals decode and encode', () => {
 	const f16 = bin.utils.float16;
-	assert.equal(f16.raw(0x0001).valueOf(), 2 ** -24);
-	assert.equal(f16.raw(0x03ff).valueOf(), (1023 / 1024) * (2 ** -14));
-	assert.equal(f16.raw(0x0400).valueOf(), 2 ** -14);
+	assert.equal(f16.to(0x0001).valueOf(), 2 ** -24);
+	assert.equal(f16.to(0x03ff).valueOf(), (1023 / 1024) * (2 ** -14));
+	assert.equal(f16.to(0x0400).valueOf(), 2 ** -14);
 
 	assert.equal(f16(2 ** -24).raw, 0x0001);
 	assert.equal(f16(2 ** -14).raw, 0x0400);
@@ -177,10 +177,10 @@ test('ULEB128: roundtrip large', () => {
 
 test('NullTerminatedStringType: read and write', () => {
 	const s = new bin.growingStream();
-	bin.write(s, bin.NullTerminatedStringType('utf8'), 'Hello');
+	bin.write(s, bin.NullTerminatedString('utf8'), 'Hello');
 	const data = s.terminate();
 	const s2 = new bin.stream(data);
-	const val = bin.read(s2, bin.NullTerminatedStringType('utf8'));
+	const val = bin.read(s2, bin.NullTerminatedString('utf8'));
 	assert.equal(val, 'Hello');
 });
 
@@ -458,14 +458,14 @@ test('Const: constant value', () => {
 test('Enum: convert value to name', () => {
 	enum Color { Red = 0, Green = 1, Blue = 2 }
 	const colorEnum = bin.Enum(Color);
-	assert.equal(colorEnum(Color.Red), 'Red');
-	assert.equal(colorEnum(Color.Blue), 'Blue');
+	assert.equal(colorEnum.to(Color.Red), 'Red');
+	assert.equal(colorEnum.to(Color.Blue), 'Blue');
 });
 
 test('Flags: convert flags to object', () => {
 	enum Permission { Read = 1, Write = 2, Execute = 4 }
 	const flags = bin.Flags(Permission, true);
-	const result = flags(Permission.Read | Permission.Write);
+	const result = flags.to(Permission.Read | Permission.Write);
 	assert.equal(result.Read, true);
 	assert.equal(result.Write, true);
 	assert.equal(result.Execute, undefined);
@@ -476,7 +476,7 @@ test('Flags: convert flags to object', () => {
 //=============================================================================
 
 test('BitFields: extract bit ranges', () => {
-	const bitFields = bin.BitFields({ a: 4, b: 4 });
+	const bitFields = bin.BitFields(0, { a: 4, b: 4 });
 	const result = bitFields.to(0xAB);
 	assert.equal(result.a, 0xB);
 	assert.equal(result.b, 0xA);

@@ -1,14 +1,14 @@
 export * from './sync';
 export * as utils from './utils';
+export { BitField, BitFields} from './utils';
 export * as async from './async';
 export * as bit from './bit';
 export * from './types';
 
-//shortcuts
-
 import * as utils from './utils';
 import { ReadType } from './sync';
-import { as, adapter, make, Type2, TypeT2, unmake } from './types';
+import { as, Type2, TypeT2 } from './types';
+
 
 //-----------------------------------------------------------------------------
 // apply names to array elements
@@ -86,20 +86,19 @@ export function asScaled<T extends number|bigint>(type: TypeT2<T>, scale: T, dig
 // enum helpers
 //-----------------------------------------------------------------------------
 
-export type EnumType = {
+export interface TSEnum {
 	[key: string]:	string | number;
 	[value: number]: string;
-} | {
-	[key: string]:	number
 };
 
-export function EnumV<T extends EnumType>(_: T) {
-	return (x: number) => x as T[keyof T] & number;
+export function EnumV<V extends number|bigint, T extends TSEnum|Record<string, V>>(_: T) {
+	return (x: V) => x as T[keyof T] & V;
 }
 
-export function Enum(e: EnumType) {
+export function Enum<V extends number|bigint, E extends TSEnum|Record<string, V>>(e: E) {
 	const e1 = (Object.entries(e).filter(([, v]) => typeof v === 'number') as [string, number][]).sort(([, v1], [, v2]) => v2 - v1);
 	const e2 = Object.fromEntries(e1.map(([k, v]) => [v, k]));
+	const e0 = Object.fromEntries(e1);
 
 	function split_enum(x: number | bigint): string {
 		const results: string[] = [];
@@ -128,13 +127,36 @@ export function Enum(e: EnumType) {
 		return results.join('+');
 	}
 	
-	return (x: number | bigint) => e2[Number(x)] ?? split_enum(Number(x));
+	return {
+		to(x: V) {
+			return e2[Number(x)] ?? split_enum(x);
+		},
+		from(x: string) {
+			const parts = x.split('+');
+			let value: number | bigint = 0;
+			for (const part of parts) {
+				const [k, n] = part.split('*');
+				const v = e0[k];
+				if (v === undefined)
+					throw new Error(`Invalid enum value: ${part}`);
+				if (typeof v === 'bigint')
+					value = BigInt(value);
+				const m = n ? parseInt(n) : 1;
+				if (typeof value === 'bigint')
+					value += BigInt(v) * BigInt(m);
+				else
+					value += v * m;
+			}
+			return value as V;
+		}
+	};
 }
-export function asEnum<T extends number|bigint, E extends EnumType>(type: TypeT2<T>, e: E): TypeT2<string> {
+
+export function asEnum<V extends number|bigint, E extends TSEnum|Record<string, V>>(type: TypeT2<V>, e: E): TypeT2<string> {
 	return as(type, Enum(e));
 }
-export function asEnum2<T extends number|bigint, E extends EnumType>(type: TypeT2<T>, e: E) {
-	const toString = Enum(e);
+export function asEnum2<V extends number|bigint, E extends TSEnum|Record<string, V>>(type: TypeT2<V>, e: E) {
+	const toString = Enum(e).to;
 	return as(type, v => ({ valueOf: () => v, toString: () => toString(v) }));
 }
 
@@ -142,81 +164,49 @@ export function asEnum2<T extends number|bigint, E extends EnumType>(type: TypeT
 // flags helpers
 //-----------------------------------------------------------------------------
 
-export function Flags(e: EnumType, noFalse: boolean) {
+export function Flags<V extends number | bigint>(e: TSEnum|Record<string, V>, noFalse = true) {
 	const e1 = Object.entries(e).filter(([, v]) => typeof v === 'number') as [string, number][];
 
-	return (x: number | bigint) => typeof x === 'bigint'
-	?	e1.reduce((obj, [k, v]) => {
-		const y = x & BigInt(v);
-		if (y || !noFalse)
-			obj[k] = !utils.isPow2(v) ? y / BigInt(utils.lowestSet(v)) : !!y;
-		return obj;
-	}, {} as Record<string, bigint | boolean>)
-	:	e1.reduce((obj, [k, v]) => {
-		const y = x & v;
-		if (y || !noFalse)
-			obj[k] = !utils.isPow2(v) ? y / utils.lowestSet(v) : !!y;
-		return obj;
-	}, {} as Record<string, number | boolean>);
-
+	return {
+		to(x: number | bigint) {
+			return (typeof x === 'bigint'
+			?	e1.reduce((obj, [k, v]) => {
+				const y = x & BigInt(v);
+				if (y || !noFalse)
+					obj[k] = !utils.isPow2(v) ? y / BigInt(utils.lowestSet(v)) : !!y;
+				return obj;
+			}, {} as Record<string, bigint | boolean>)
+			:	e1.reduce((obj, [k, v]) => {
+				const y = x & v;
+				if (y || !noFalse)
+					obj[k] = !utils.isPow2(v) ? y / utils.lowestSet(v) : !!y;
+				return obj;
+			}, {} as Record<string, number | boolean>)
+			) as Record<string, V | boolean>;
+		},
+		from(x: Record<string, V | boolean>) {
+			let value: number | bigint = 0;
+			for (const [k, v] of Object.entries(x)) {
+				const ev = e[k];
+				if (ev === undefined)
+					throw new Error(`Invalid flag: ${k}`);
+				if (typeof ev === 'bigint')
+					value = BigInt(value);
+				if (v) {
+					if (typeof value === 'bigint')
+						value += BigInt(ev);
+					else
+						value += Number(ev);
+				}
+			}
+			return value as V;
+		}
+	};
 }
-export function asFlags<T extends TypeT2<number> | TypeT2<bigint>, E extends EnumType>(type: T, e: E, noFalse = true) {
+export function asFlags<V extends number | bigint>(type: TypeT2<V>, e: TSEnum|Record<string, V>, noFalse = true) {
 	return as(type, Flags(e, noFalse));
 }
-
-//-----------------------------------------------------------------------------
-// bitfields
-//-----------------------------------------------------------------------------
-
-export type BitField<D> = [number, adapter<number, D>];
-
-export function BitFields<T extends Record<string, number | BitField<any>>>(bitfields: T) {
-	type Num = {[K in keyof T]: T[K] extends BitField<infer D> ? D : number;};
-	type Big = {[K in keyof T]: T[K] extends BitField<infer D> ? D : bigint;};
-
-	const to = (x: number | bigint) => {
-		if (typeof x === 'bigint') {
-			let y: bigint = x;
-			const obj = {} as Record<string, bigint>;
-			for (const i in bitfields) {
-				const bf	= bitfields[i];
-				const bits	= typeof bf === 'number' ? bf : bf[0];
-				const v		= y & ((1n << BigInt(bits)) - 1n);
-				y >>= BigInt(bits);
-				obj[i] = typeof bf === 'number' ? v : make(bf[1], Number(v));
-			}
-			return obj;
-		} else {
-			const obj = {} as Record<string, number>;
-			let y: number = x;
-			for (const i in bitfields) {
-				const bf	= bitfields[i];
-				const bits	= typeof bf === 'number' ? bf : bf[0];
-				const v		= y & ((1 << bits) - 1);
-				y >>= bits;
-				obj[i] = typeof bf === 'number' ? v : make(bf[1], v);
-			}
-			return obj;
-		}
-	};
-
-	const from = (obj: Record<string, any>) => {
-		let x	= 0n;
-		let big = false;
-		for (const i in bitfields) {
-			const bf	= bitfields[i];
-			const bits	= typeof bf === 'number' ? bf : bf[0];
-			const v		= obj[i];
-			const raw	= typeof bf === 'number' ? v : unmake(bf[1], v);
-			if (typeof raw === 'bigint')
-				big = true;
-			x = (x << BigInt(bits)) | BigInt(raw as number | bigint);
-		}
-		return big ? x : Number(x);
-	};
-
-	return {
-		to:		to		as ((x: number, _opt?: any) => Num)		& ((x: bigint, _opt?: any) => Big),
-		from:	from	as ((obj: Num, _opt?: any) => number)	& ((obj: Big, _opt?: any) => bigint),
-	};
+export function asFlags2<V extends number | bigint>(type: TypeT2<V>, e: TSEnum|Record<string, V>, noFalse = true) {
+	const toString = Flags(e, noFalse).to;
+	return as(type, v => ({ valueOf: () => v, toString: () => toString(v) }));
 }
