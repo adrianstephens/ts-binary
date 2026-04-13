@@ -1,12 +1,65 @@
 import * as utils from '../dist/utils';
 
+function assertClose(label: string, got: number, expected: number, rel = 1e-12, abs = 1e-12) {
+	const diff = Math.abs(got - expected);
+	const lim = Math.max(abs, Math.abs(expected) * rel);
+	if (diff > lim)
+		throw new Error(`${label}: got=${got} expected=${expected} diff=${diff} lim=${lim}`);
+}
+
 function rb() {
 	return (Math.random() * 256) | 0;
 }
 
 function r32() {
 	return (Math.random() * 0x100000000) >>> 0;
+}         
+const got = +utils.float16(-1).pow(utils.float16(1/3));
+
+const fa = 1.1, fb = 2.3;
+const a = utils.float16(fa);
+const b = utils.float16(fb);
+console.log(`a = ${a}, b = ${b}`);
+console.log(`a + b = ${+a.add(b)} (${fa + fb})`);
+console.log(`a - b = ${+a.sub(b)} (${fa - fb})`);
+console.log(`a * b = ${+a.mul(b)} (${fa * fb})`);
+console.log(`a / b = ${+a.div(b)} (${fa / fb})`);
+console.log(`a % b = ${+a.mod(b)} (${fa % fb})`);
+console.log(`a ** b = ${+a.pow(b)} (${fa ** fb})`);
+
+for (const [x, y] of [
+	[1.5, 2.25],
+	[0.75, 3.5],
+	[10, -0.5],
+	[2, 10],
+] as const) {
+	const got = +(utils.float16(x) as any).pow(utils.float16(y));
+	const expected = x ** y;
+	assertClose(`float16 pow ${x}**${y}`, got, expected, 6e-2, 1e-3);
 }
+
+for (const [x, y] of [
+	[1.5, 2.25],
+	[1.0001, 10000],
+	[0.9, -12.5],
+	[2, 0.5],
+] as const) {
+	const got = +(utils.float128(x) as any).pow(utils.float128(y));
+	const expected = x ** y;
+	assertClose(`float128 pow ${x}**${y}`, got, expected, 1e-11, 1e-12);
+}
+
+console.log('OK: pow sanity assertions passed');
+
+const Uint3Array = utils.UintTypedArray(41);
+const b3 = new Uint3Array(32);
+
+for (let i = 0; i < 32; i++)
+	b3[i] = (i - 16);
+
+for (const i of b3)
+	console.log(i);
+
 
 const Float16Array = utils.BitAdapterTypedArray(utils.float16);
 const f16 = new Float16Array(new ArrayBuffer(64), 0, 32);
@@ -17,8 +70,7 @@ for (const i of f16)
 	console.log(+i);
 
 
-const bf = utils.BitFields(0, {a:1, b:2, c:3} as const);
-const StructArray = utils.BitAdapterTypedArray(bf);
+const StructArray = utils.BitAdapterTypedArray(utils.BitFields(0, {a:1, b:2, c:3} as const));
 const sa = new StructArray(new ArrayBuffer(64), 0, 32);
 for (let i = 0; i < 32; i++)
 	sa[i] = {a: i & 1, b: (i >> 1) & 3, c: (i >> 3) & 7};
@@ -26,19 +78,8 @@ for (let i = 0; i < 32; i++)
 for (const i of sa)
 	console.log(i);
 
-
-const Uint3Array = utils.UintTypedArray(3);
-
-const b3 = new Uint3Array(new ArrayBuffer(12), 0, 32);
-
-for (let i = 0; i < 32; i++)
-	b3[i] = i;
-
-for (const i of b3.subarray(7, 10))
-	console.log(i);
-
 for (const le of [true, false])
-for (let bits = 25; bits <= 32; bits++)
+for (let bits = 1; bits <= 32; bits++)
 for (let offset = 0; offset < 32; offset++)
 for (let t = 0; t < 300; t++) {
 	const nbytes = ((offset + bits + 7) >> 3) + 2;

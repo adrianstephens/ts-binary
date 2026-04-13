@@ -20,9 +20,9 @@ type Pow2<N extends number, T extends unknown[] = [0], I extends unknown[] = []>
 //type Gt<A extends number, B extends number, T extends unknown[] = []> = T['length'] extends B ? (T['length'] extends A ? false : true) : T['length'] extends A ? false : Gt<A, B, [...T, 0]>;
 export type BitsType<N extends number> = number extends N ? number : N extends UpTo8 ? IntRange<Pow2<N>> : N extends UpTo32 ? number : bigint;
 
-//export function after0<V, R>(v: V, then: (value: Awaited<V>) => R): V extends PromiseLike<any> ? Promise<R> : R {
-//	return (v instanceof Promise ? v.then(then as (value: any) => R) : then(v as Awaited<V>)) as V extends PromiseLike<any> ? Promise<R> : R;
-//}
+function compare<T extends number|bigint|string>(a: T, b: T): number {
+	return a === b ? 0 : a > b ? 1 : -1;
+}
 
 export function after<V, R>(v: V, then: (value: Awaited<V>) => R): V extends Promise<any> ? Promise<R> : R {
 	if (!(v instanceof Promise))
@@ -61,6 +61,47 @@ export function chain<T>(v: T) {
     return new Chain(v);
 }
 
+export class KMP {
+	failure: Uint8Array;
+	j = 0;
+	
+	constructor(public pattern: Uint8Array) {
+		// Build failure function
+		const f = new Uint8Array(pattern.length);
+		for (let i = 1, j = 0; i < pattern.length; i++) {
+			while (j > 0 && pattern[i] !== pattern[j])
+				j = f[j - 1];
+			if (pattern[i] === pattern[j])
+				j++;
+			f[i] = j;
+		}
+		this.failure = f;
+	}
+
+	search(data: Uint8Array, start = 0) {
+		const f = this.failure;
+		const p = this.pattern;
+		let j = this.j, pos = start;
+
+		for (let i = start; i < data.length; i++) {
+			const byte = data[i];
+			while (j > 0 && byte !== p[j])
+				j = f[j - 1];
+			if (byte === p[j])
+				j++;
+			pos++;
+			if (j === p.length) {
+				//yield pos - p.length; // match offset
+				j = f[j - 1];
+				return pos - p.length;
+			}
+		}
+		this.j = j;
+		return -1;
+	}
+
+}
+
 //-----------------------------------------------------------------------------
 //	bit stuff
 //-----------------------------------------------------------------------------
@@ -72,6 +113,15 @@ export function isPow2(n: number) {
 }
 export function contiguousBits(n: number) {
 	return isPow2(n + lowestSet(n));
+}
+
+
+export function nextPow2(n: number): number;
+export function nextPow2(n: bigint): number;
+export function nextPow2(n: number|bigint) {
+	return typeof n === 'bigint'
+		? 1n << (BigInt(highestSetIndex(n - 1n) + 1))
+		: 1 << (highestSetIndex(n - 1) + 1);
 }
 
 export function lowestSet(n: number): number;
@@ -131,30 +181,68 @@ export function clearLowest(n: number | bigint)	{
 		: n & (n - 1);
 }
 
-function bitCount32(n: number) {
-	n = n - ((n >> 1) & 0x55555555);
-	n = (n & 0x33333333) + ((n >> 2) & 0x33333333);
-	return ((n + (n >> 4) & 0xF0F0F0F) * 0x1010101) >> 24;
-}
-export function bitCount(n: number | bigint) : number {
-	return typeof n === 'bigint'
-		? bitCount32(Number(n & 0xFFFFFFFFn)) + bitCount(n >> 32n)
-		: bitCount32(n);
+export function bitCount(x: number | bigint): number {
+	if (x < 0)
+		x = ~x;
+	if (x < 0x100000000) {
+		x = Number(x);
+		x = x - ((x >> 1) & 0x55555555);
+		x = (x & 0x33333333) + ((x >> 2) & 0x33333333);
+		return ((x + (x >> 4) & 0xF0F0F0F) * 0x1010101) >> 24;
+	}
+
+	x = BigInt(x);
+	let k = 5;
+	for (let t = x >> 32n; t;)
+		t >>= BigInt(1 << k++);
+
+	const n			= 1 << k;
+	const limit		= 1n << BigInt(n);
+
+	let s = 1;
+	for (; s < k; s <<= 1) {
+		const bi	= BigInt(s);
+		const mask	= limit / ((1n << bi) + 1n);
+		x = (x & mask) + ((x >> bi) & mask);
+	}
+
+	//we can add the rest with a multiply and shift (which turns out to be slower)
+	//const mask = limit / ((1n << bi) - 1n);
+	//x = (x * mask) >> BigInt(n - i);
+
+	//we can skip the masking when the total can fit
+	for (; s < n; s <<= 1)
+		x += x >> BigInt(s);
+
+	return Number(x & ((1n << BigInt(k)) - 1n));
 }
 
-export function splitBinary(n : number | bigint, splits : number[]) {
-    let b = 0;
-	return typeof n === 'bigint'
-		? splits.map(s => {
-			const r = (n >> BigInt(b)) & ((1n << BigInt(s)) - 1n);
-			b += s;
-			return r;
-		})
-		: splits.map(s => {
-			const r = (n >> b) & ((1 << s) - 1);
-			b += s;
-			return r;
-		});
+export function bitReverse<N extends number>(x: number | bigint, bits: N): N extends UpTo32 ? number : number|bigint {
+	type	R		= N extends UpTo32 ? number : bigint;
+	let		n		= 1 << (32 - Math.clz32(bits - 1));	// next power of 2 >= bits
+	const	shift	= n - bits;
+
+	if (bits <= 32) {
+		let		mask	= (2 ** n) - 1;
+		x = typeof x === 'bigint' ? Number(x & BigInt(mask)) : x & mask;
+
+		while ((n >>= 1)) {
+			mask ^= mask << n;
+			x = ((x >> n) & mask) | ((x & mask) << n);
+		}
+		return (x >> shift) as R;
+		
+	} else {
+		let		mask	= (1n << BigInt(n)) - 1n;
+		x = BigInt(x) & mask;
+
+		while ((n >>= 1)) {
+			const nb = BigInt(n);
+			mask ^= mask << nb;
+			x = ((x >> nb) & mask) | ((x & mask) << nb);
+		}
+		return (x >> BigInt(shift)) as R;
+	}
 }
 
 //-----------------------------------------------------------------------------
@@ -168,11 +256,12 @@ interface Adapter<T, D> {
 
 type BitInput<N>	= number extends N ? number | bigint : N extends 0 ? number | bigint : N extends UpTo52 ? number : bigint;
 type BitOutput<N>	= N extends BitAdapterN<infer _, infer D> ? D : N extends UpTo52 ? number : number extends N ? number | bigint : bigint;
+export type BitsOutput<T extends Record<string, BitAdapterN<any, any> | number>> = {[K in keyof T]: BitOutput<T[K]>};
 
-interface BitAdapter<T extends number|bigint, D> extends Adapter<T, D> {
+export interface BitAdapter<T extends number|bigint, D> extends Adapter<T, D> {
 	bits: number;
 }
-interface BitAdapterN<N extends number, D> extends Adapter<BitInput<N>, D> {
+export interface BitAdapterN<N extends number, D> extends Adapter<BitInput<N>, D> {
 	bits: N;
 }
 
@@ -180,7 +269,7 @@ export function BitField<N extends number, T>(bits: N, adapter: Adapter<BitInput
 	return { bits, ...adapter };
 }
 
-export function BitFields<N extends number, T extends Record<string, BitAdapterN<any, any> | number>>(bits: N, bitfields: T): BitAdapterN<N, {[K in keyof T]: BitOutput<T[K]>}> {
+export function BitFields<N extends number, T extends Record<string, BitAdapterN<any, any> | number>>(bits: N, bitfields: T): BitAdapterN<N, BitsOutput<T>> {
 	const total	= Object.values(bitfields).reduce((sum, bf) => sum + (typeof bf === 'number' ? bf : bf.bits), 0) as number;
 	if (bits === 0)
 		bits = total as N;
@@ -199,8 +288,8 @@ export function BitFields<N extends number, T extends Record<string, BitAdapterN
 					const bits	= typeof bf === 'number' ? bf : bf.bits;
 					const v		= y & ((1n << BigInt(bits)) - 1n);
 					const v2	= bits <= 52 ? Number(v) : v;
-					y >>= BigInt(bits);
 					obj[i] = typeof bf === 'number' ? v2 : bf.to(v2);
+					y >>= BigInt(bits);
 				}
 				return obj as any;
 			},
@@ -210,8 +299,7 @@ export function BitFields<N extends number, T extends Record<string, BitAdapterN
 				for (const i in bitfields) {
 					const bf	= bitfields[i];
 					const bits	= typeof bf === 'number' ? bf : bf.bits;
-					const v		= obj[i];
-					const raw	= typeof bf === 'number' ? v : bf.from(v);
+					const raw	= typeof bf === 'number' ? obj[i] : bf.from(obj[i]);
 					x |= (BigInt(raw) & ((1n << BigInt(bits)) - 1n)) << BigInt(bit);
 					bit += bits;
 				}
@@ -229,9 +317,9 @@ export function BitFields<N extends number, T extends Record<string, BitAdapterN
 					const bf	= bitfields[i];
 					const bits	= typeof bf === 'number' ? bf : bf.bits;
 					const v		= y & ((1 << bits) - 1);
-					const v2	= bits <= 52 ? v : BigInt(v);
+					//const v2	= bits <= 52 ? v : BigInt(v);
+					obj[i] = typeof bf === 'number' ? v : bf.to(v);
 					y >>= bits;
-					obj[i] = typeof bf === 'number' ? v : bf.to(v2);
 				}
 				return obj as any;
 			},
@@ -241,8 +329,7 @@ export function BitFields<N extends number, T extends Record<string, BitAdapterN
 				for (const i in bitfields) {
 					const bf	= bitfields[i];
 					const bits	= typeof bf === 'number' ? bf : bf.bits;
-					const v		= obj[i];
-					const raw	= typeof bf === 'number' ? v : bf.from(v);
+					const raw	= typeof bf === 'number' ? obj[i] : bf.from(obj[i]);
 					x |= (Number(raw) & ((1 << bits) - 1)) << bit;
 					bit += bits;
 				}
@@ -265,7 +352,17 @@ export function toSignedBig(n: bigint, bits: number) {
 	return (n & (m - 1n)) - (n & m);
 }
 
-// get/put 1-7 byte integers from/to DataView (7 bytes will lose precision)
+
+export function isqrt(n: bigint) {
+	if (n < 2n)
+		return n;
+	let x = 1n << BigInt((highestSetIndex(n) + 2) >> 1), y;
+	while ((y = (x + n / x) >> 1n) < x)
+		x = y;
+	return x;
+}
+
+// get/put 1-7 byte integers from/to DataView (truncates to 52 bits)
 
 export function getUint(dv: DataView, offset: number, len: number, littleEndian?: boolean) {
 	let result = 0;
@@ -275,14 +372,14 @@ export function getUint(dv: DataView, offset: number, len: number, littleEndian?
 		if (len & 2)
 			result = (result << 16) | dv.getUint16(offset + (len & 4), true);
 		if (len & 4)
-			result = result * (2**32) + dv.getUint32(offset, true);
+			result = (result & 0x0fffff) * (2**32) + dv.getUint32(offset, true);
 	} else {
 		if (len & 1)
 			result = dv.getUint8(offset);
 		if (len & 2)
 			result = (result << 16) | dv.getUint16(offset + (len & 1), false);
 		if (len & 4)
-			result = result * (2**32) + dv.getUint32(offset + (len & 3), false);
+			result = (result & 0x0fffff) * (2**32) + dv.getUint32(offset + (len & 3), false);
 	}
 	return result;
 }
@@ -291,7 +388,7 @@ export function putUint(dv: DataView, offset: number, v: number, len: number, li
 	if (littleEndian) {
 		if (len & 4) {
 			dv.setUint32(offset, v & 0xffffffff, true);
-			v /= 2**32;
+			v = Math.floor(v / 2**32);
 		}
 		if (len & 2) {
 			dv.setUint16(offset + (len & 4), v & 0xffff, true);
@@ -302,7 +399,7 @@ export function putUint(dv: DataView, offset: number, v: number, len: number, li
 	} else {
 		if (len & 4) {
 			dv.setUint32(offset + (len & 3), v & 0xffffffff);
-			v /= 2**32;
+			v = Math.floor(v / 2**32);
 		}
 		if (len & 2) {
 			dv.setUint16(offset + (len & 1), v & 0xffff);
@@ -419,10 +516,25 @@ export function putBigUintBits(dv: DataView, offset: number, v: bigint, len: num
 //	float
 //-----------------------------------------------------------------------------
 
+const NumberDV	= new DataView(new ArrayBuffer(8));
+
+function NumberToRep(f: number) {
+	NumberDV.setFloat64(0, f, true);
+	return NumberDV.getBigUint64(0, true);
+}
+function RepToNumber(i: bigint): number {
+	NumberDV.setBigUint64(0, i, true);
+	return NumberDV.getFloat64(0, true);
+}
+
 interface FloatParts<M extends number|bigint = number|bigint> {
 	mantissa:	M,
 	exponent:	number,
 	sign:		number;
+}
+
+export function toNumber(parts: FloatParts) {
+	return RepToNumber(float64.pack(parts));
 }
 
 function floatAdd(a: FloatParts, b: FloatParts) {
@@ -445,54 +557,131 @@ function floatMul(a: FloatParts, b: FloatParts) {
 
 function floatDiv(a: FloatParts, b: FloatParts, precision: number) {
 	return !b.mantissa
-		? {mantissa: 0, exponent: Infinity, sign: a.sign ^ b.sign}
+		? {mantissa: 0n, exponent: Infinity, sign: a.sign ^ b.sign}
 		: {mantissa: (BigInt(a.mantissa) << BigInt(precision)) / BigInt(b.mantissa), exponent: a.exponent - b.exponent - precision, sign: a.sign ^ b.sign};
+}
+
+function floatPow(a: FloatParts, b: FloatParts, precision: number) {
+	const mul = (a: FloatParts<bigint>, b: FloatParts<bigint>) =>
+		({mantissa: (a.mantissa * b.mantissa) >> BigInt(precision - 1), exponent: a.exponent + b.exponent + precision - 1, sign: 0});
+
+	const sqrt = (a: FloatParts<bigint>): FloatParts<bigint> =>
+		a.exponent & 1
+			? {mantissa: isqrt(a.mantissa << BigInt(precision + 1)) >> 1n, exponent: (a.exponent - precision + 1) >> 1, sign: 0}
+			: {mantissa: isqrt(a.mantissa << BigInt(precision)), exponent: (a.exponent - precision) >> 1, sign: 0};
+
+	let result	= {mantissa: 1n << BigInt(precision), exponent: -precision, sign: 0};
+	if (!b.mantissa)
+		return result;
+	if (!a.mantissa)
+		return a;
+
+	const shift	= highestSetIndex(a.mantissa) + 1 - precision;
+	const am 	= shift > 0 ? BigInt(a.mantissa) >> BigInt(shift) : BigInt(a.mantissa) << BigInt(-shift);
+	const bm	= BigInt(b.mantissa);
+
+	const whole	= b.exponent < 0 ? (bm >> BigInt(-b.exponent)) : (bm << BigInt(b.exponent));
+	if (whole) {
+		let		base = {mantissa: am, exponent: a.exponent + shift, sign: 0};
+		let		n;
+		for (n = whole; !(n & 1n); n >>= 1n)
+			base = mul(base, base);
+
+		result = base;
+		for (n >>= 1n; n; n >>= 1n) {
+			base = mul(base, base);
+			if (n & 1n)
+				result = mul(result, base);
+		}
+	}
+
+	if (b.exponent < 0) {
+		const	fracBits= Math.min(-b.exponent, precision + 4);
+		let		mask	= 1n << BigInt(fracBits);
+		let 	frac	= (bm >> BigInt(-b.exponent - fracBits)) & (mask - 1n);
+		if (frac && a.sign)
+			return {mantissa: 0n, exponent: Infinity, sign: 1};
+
+		let		base	= {mantissa: am, exponent: a.exponent + shift, sign: 0};
+		for (mask >>= 1n; frac; mask >>= 1n) {
+			base = sqrt(base);
+			if (frac & mask) {
+				result = mul(result, base);
+				frac -= mask;
+			}
+		}
+	}
+
+	if (b.sign)
+		 result = {mantissa: (1n << BigInt(precision << 1)) / result.mantissa, exponent: -result.exponent - (precision << 1), sign: 0};
+
+	if (a.sign && (whole & 1n))
+		result.sign = 1;
+	return result;
+}
+
+function floatMod(a: FloatParts, b: FloatParts) {
+	if (!b.mantissa || a.exponent === Infinity)
+		return {mantissa: 0, exponent: Infinity, sign: a.sign ^ b.sign};
+	if (b.exponent === Infinity)
+		return a;
+	const e = Math.min(a.exponent, b.exponent);
+	return {mantissa: (BigInt(a.mantissa) << BigInt(a.exponent - e)) % (BigInt(b.mantissa) << BigInt(b.exponent - e)), exponent: e, sign: a.sign};
+}
+
+function floatCompare(a: FloatParts, b: FloatParts) {
+	const sign = a.sign ? -1 : 1;
+	if (a.sign !== b.sign)
+		return sign;
+
+	let am	= BigInt(a.mantissa);
+	let bm	= BigInt(b.mantissa);
+	const e	= a.exponent - b.exponent;
+	if (e < 0)
+		bm <<= BigInt(-e);
+	else if (e > 0)
+		am <<= BigInt(e);
+
+	return am === bm ? 0 : am > bm ? sign : -sign;
 }
 
 export interface FloatInstance<R extends number | bigint = number | bigint, M extends number | bigint = R> {
 	raw: R;
-	from(x: number): this;
-	parts():		FloatParts<M>;
-	valueOf():		number;
-	toString(): 	string;
-	abs():			this;
-	neg():			this;
-	add(b: this):	this;
-	sub(b: this):	this;
-	mul(b: this):	this;
-	div(b: this):	this;
+	from(x: number): 	this;
+	parts():			FloatParts<M>;
+	valueOf():			number;
+	toString(): 		string;
+	abs():				this;
+	neg():				this;
+	add(b: this):		this;
+	sub(b: this):		this;
+	mul(b: this):		this;
+	div(b: this):		this;
+	mod(b: this):		this;
+	pow(b: this):		this;
+	compare(b: this):	number;
 }
 
-interface Float<R extends number | bigint = number | bigint, M extends number|bigint = R> extends BitAdapter<R, FloatInstance<R, M>> {
-	bits: number;
-	to(i: R):			FloatInstance<R, M>;
-	from(x: FloatInstance<R, M>):	R;
-
+interface Float<R extends number | bigint, M extends number|bigint> extends BitAdapter<R, FloatInstance<R, M>> {
 	(value: number):	FloatInstance<R, M>;
+
+	bits: number;
+	to(i: number|bigint):			FloatInstance<R, M>;
+	from(x: FloatInstance<R, M>):	R;
 	parts(mantissa: M, exp: number, sign: number): FloatInstance<R, M>;
 	split(raw: R): 		FloatParts<M>;
 	pack(parts: FloatParts): R;
 }
 
-export const float8e4m3 = Float(3, 4, 7);
-export const float8e5m2 = Float(2, 5, 15);
-export const float16	= Float(10, 5, 15);
+export const float8e4m3 = Float(3, 4);
+export const float8e5m2 = Float(2, 5);
+export const float16	= Float(10, 5);
+export const Bfloat16	= Float(7, 8);
 export const float32	= Float(23, 8);
-export const float64	= Float(52, 11) as Float<bigint, number>;
+export const float64	= Float(52, 11);
 export const float128	= Float(112, 15);
 
-const NumberDV	= new DataView(new ArrayBuffer(8));
-
-function NumberToRep(f: number) {
-	NumberDV.setFloat64(0, f, true);
-	return NumberDV.getBigUint64(0, true);
-}
-function RepToNumber(i: bigint): number {
-	NumberDV.setBigUint64(0, i, true);
-	return NumberDV.getFloat64(0, true);
-}
-
-export function Float<M extends number>(mbits: M, ebits: number, ebias = (1 << (ebits - 1)) - 1, sbit = true): Float<number | bigint, BitInput<M>> {
+export function Float<M extends number>(mbits: M, ebits: number, ebias = (1 << (ebits - 1)) - 1, sbit = true): Float<M extends UpTo32 ? number : bigint, BitInput<M>> {
 	const bits = BitFields(0, {
 		mantissa:	mbits as number,
 		exponent:	ebits as UpTo32,
@@ -500,7 +689,8 @@ export function Float<M extends number>(mbits: M, ebits: number, ebias = (1 << (
 	});
 
 	type MT			= BitInput<M>;
-	type Instance	= FloatInstance<number | bigint, MT>;
+	type RT			= M extends UpTo32 ? number : bigint;
+	type Instance	= FloatInstance<RT, MT>;
 
 	const emax	= (1 << ebits) - 1;
 	const mimpN	= 2 ** mbits;
@@ -511,38 +701,27 @@ export function Float<M extends number>(mbits: M, ebits: number, ebias = (1 << (
 	ebias += mbits;
 
 	const splitAdjust = (parts: FloatParts) => {
-		if (parts.exponent === emax)
-			parts.exponent = Infinity;
-		else if (parts.exponent === 0)
-			parts.exponent = 1 - ebias;
-		else {
-			parts.exponent -= ebias;
-			if (typeof parts.mantissa === "bigint")
-				parts.mantissa += mimpB;
-			else
-				parts.mantissa += mimpN;
-		}
-		return parts;
+		const m = parts.mantissa;
+		const e = parts.exponent;
+		return	e === emax	? {mantissa: m, exponent: Infinity, sign: parts.sign}
+			:	e === 0		? {mantissa: m, exponent: 1 - ebias, sign: parts.sign}
+			:	{mantissa: typeof m === "bigint" ? m + mimpB : m + mimpN, exponent: e - ebias, sign: parts.sign};
 	};
 
 	const packAdjust = (parts: FloatParts) => {
-		if (parts.mantissa === 0) {
-			parts.exponent = 0;
-			return parts;
+		if (parts.mantissa === 0)
+			return {mantissa: 0, exponent: parts.exponent === Infinity ? emax : 0, sign: parts.sign};
+
+		let shift	= highestSetIndex(parts.mantissa) - mbits;
+		let e		= parts.exponent + ebias + shift;
+		if (e >= emax)
+			return {mantissa: 0, exponent: emax, sign: parts.sign};
+
+		if (e <= 0) {
+			shift	-= e - 1;
+			e		= 0;
 		}
-		let shift = highestSetIndex(parts.mantissa) - mbits;
-		parts.exponent += ebias + shift;
-		if (parts.exponent >= emax) {
-			shift			= 0;
-			parts.mantissa	= 0;
-			parts.exponent	= emax;
-		} else if (parts.exponent <= 0) {
-			shift			-= parts.exponent - 1;
-			parts.exponent	= 0;
-		}
-		const mantissa = shift < 0 ? BigInt(parts.mantissa) << BigInt(-shift) : BigInt(parts.mantissa) >> BigInt(shift);
-		parts.mantissa = typeof parts.mantissa === "bigint" ? mantissa : Number(mantissa);
-		return parts;
+		return {mantissa: shift < 0 ? BigInt(parts.mantissa) << BigInt(-shift) : BigInt(parts.mantissa) >> BigInt(shift), exponent: e, sign: parts.sign};
 	};
 
 	const prototype = mbits === 52 && ebits === 11 && ebias === 1023 && sbit ? {
@@ -557,6 +736,9 @@ export function Float<M extends number>(mbits: M, ebits: number, ebias = (1 << (
 		sub(b)				{ return rawN(+this - +b); },
 		mul(b)				{ return rawN(+this * +b); },
 		div(b)				{ return rawN(+this / +b); },
+		mod(b)				{ return rawN(+this % +b); },
+		pow(b)				{ return rawN((+this) ** (+b)); },
+		compare(b)			{ return compare(+this, +b); },
 	} as FloatInstance<bigint, number> : bits.bits > 32 ? {
 		raw: 0n,
 		from(x: number)		{ return rawP(float64.split(NumberToRep(x))); },
@@ -569,6 +751,9 @@ export function Float<M extends number>(mbits: M, ebits: number, ebias = (1 << (
 		sub(b)				{ return rawP(floatAdd(this.parts(), b.neg().parts())); },
 		mul(b)				{ return rawP(floatMul(this.parts(), b.parts())); },
 		div(b)				{ return rawP(floatDiv(this.parts(), b.parts(), mbits)); },
+		mod(b)				{ return rawP(floatMod(this.parts(), b.parts())); },
+		pow(b)				{ return rawP(floatPow(this.parts(), b.parts(), mbits + 8)); },
+		compare(b)			{ return floatCompare(this.parts(), b.parts()); },
 	} as FloatInstance<bigint, bigint> : {
 		raw: 0,
 		from(x: number)		{ return rawP(float64.split(NumberToRep(x))); },
@@ -581,35 +766,28 @@ export function Float<M extends number>(mbits: M, ebits: number, ebias = (1 << (
 		sub(b)				{ return rawP(floatAdd(this.parts(), b.neg().parts())); },
 		mul(b)				{ return rawP(floatMul(this.parts(), b.parts())); },
 		div(b)				{ return rawP(floatDiv(this.parts(), b.parts(), mbits)); },
+		mod(b)				{ return rawP(floatMod(this.parts(), b.parts())); },
+		pow(b)				{ return rawP(floatPow(this.parts(), b.parts(), mbits + 8)); },
+		compare(b)			{ return floatCompare(this.parts(), b.parts()); },
 	} as FloatInstance<number, number>;
 
 	function make(i: number|bigint) {
 		const obj = Object.create(prototype) as Instance;
-		obj.raw = i;
+		obj.raw = i as RT;
 		return obj;
 	}
 	const rawN	= (f: number) => make(NumberToRep(f));
 	const rawP	= (p: FloatParts) => make(bits.from(packAdjust(p)));
 
 	return Object.assign((prototype as Instance).from, {
-		bits: bits.bits,
-		to: make,
-		from(x: Instance) {
-			return x.raw;
-		},
-		parts(mantissa: MT, exponent: number, sign: number) {
-			return make(bits.from(packAdjust({mantissa, exponent, sign})));
-		},
-		split(raw: number|bigint) {
-			return splitAdjust(bits.to(raw)) as FloatParts<MT>;
-		},
-		pack(parts: FloatParts) {
-			return bits.from(packAdjust(parts));
-		}
+		bits:	bits.bits,
+		to:		make,
+		from(x: Instance) 			{ return x.raw; },
+		split(raw: number|bigint)	{ return splitAdjust(bits.to(raw)) as FloatParts<MT>; },
+		pack(parts: FloatParts)		{ return bits.from(packAdjust(parts)) as RT; },
+		parts(mantissa: MT, exponent: number, sign: number) { return make(bits.from(packAdjust({mantissa, exponent, sign}))); },
 	});
 }
-
-
 
 //-----------------------------------------------------------------------------
 //	buffers
@@ -624,26 +802,28 @@ export interface TypedArray<R = any> {
 
 //	new (buffer: ArrayBufferLike, byteOffset?: number, length?: number): TypedArray<R>;
 	[Symbol.iterator](): IterableIterator<R>;
-	slice(begin:	number, end?: number): TypedArray<R>;
-	subarray(begin: number, end?: number): TypedArray<R>;
+	slice(begin:	number, end?: number): this;
+	subarray(begin: number, end?: number): this;
 	set(array: ArrayLike<R>, offset?: number): void;
 
-	copyWithin(target: number, start: number, end?: number): ArrayLike<R>;
-	every(callback: (value: R, index: number, array: ArrayLike<R>) => any, thisArg?: any): any;
-	fill(value: R, start?: number, end?: number): ArrayLike<R>;
-	filter(callback: (value: R, index: number, array: ArrayLike<R>) => any, thisArg?: any): any;
-	find(callback: (value: R, index: number, array: ArrayLike<R>) => any, thisArg?: any): any;
-	findIndex(callback: (value: R, index: number, array: ArrayLike<R>) => any, thisArg?: any): number;
-	forEach(callback: (value: R, index: number, array: ArrayLike<R>) => any, thisArg?: any): void;
+	copyWithin(target: number, start: number, end?: number): this;
+	every(callback: (value: R, index: number, array: this) => unknown, thisArg?: any): boolean;
+	fill(value: R, start?: number, end?: number): this;
+	filter(callback: (value: R, index: number, array: this) => any, thisArg?: any): this;
+	find(callback: (value: R, index: number, array: this) => boolean, thisArg?: any): R | undefined;
+	findIndex(callback: (value: R, index: number, array: this) => boolean, thisArg?: any): number;
+	forEach(callback: (value: R, index: number, array: this) => void, thisArg?: any): void;
 	indexOf(searchElement: R, fromIndex?: number): number;
 	join(separator?: string): string;
 	lastIndexOf(searchElement: R, fromIndex?: number): number;
-	map(callback: (value: R, index: number, array: ArrayLike<R>) => any, thisArg?: any): any;
-	reduce(callback: (prev: R, curr: R, index: number, array: ArrayLike<R>) => R, initial?: R): R;
-	reduceRight(callback: (prev: R, curr: R, index: number, array: ArrayLike<R>) => R, initial?: R): R;
-	reverse(): ArrayLike<R>;
-	some(callback: (value: R, index: number, array: ArrayLike<R>) => any, thisArg?: any): any;
-	sort(compareFn?: (a: R, b: R) => number): ArrayLike<R>;
+	map(callback: (value: R, index: number, array: this) => any, thisArg?: any): this;
+	reduce(callback: (prev: R, curr: R, index: number, array: this) => R, initial?: R): R;
+    reduce<U>(callback: (prev: U, curr: R, index: number, array: this) => U, initial: U): U;
+	reduceRight(callback: (prev: R, curr: R, index: number, array: this) => R, initial?: R): R;
+    reduceRight<U>(callback: (prev: U, curr: R, index: number, array: this) => U, initial: U): U;
+	reverse(): this;
+	some(callback: (value: R, index: number, array: this) => unknown, thisArg?: any): boolean;
+	sort(compareFn?: (a: R, b: R) => number): this;
 	toString(): string;
 }
 
@@ -671,6 +851,37 @@ export interface TypedArrayLike {
 	byteLength: number,
 }
 export type ViewMaker<T> = (new(a: ArrayBufferLike, offset: number, length: number)=>T) & {BYTES_PER_ELEMENT?: number};
+type InferViewValue<T> = T extends TypedArray<infer R> ? R : never;
+export type ViewMaker2<T extends TypedArray = TypedArray> = ViewMaker<T> & {
+	new(length: number): T;
+	new(array: ArrayLike<InferViewValue<T>>): T;
+//	new<TArrayBuffer extends ArrayBufferLike = ArrayBuffer>(buffer: TArrayBuffer, byteOffset?: number, length?: number): Uint16Array<TArrayBuffer>;
+	new(buffer: ArrayBuffer, byteOffset?: number, length?: number): T;
+	new(array: ArrayLike<InferViewValue<T>> | ArrayBuffer): T;
+	new(elements: Iterable<InferViewValue<T>>): T;
+
+	of(...items: InferViewValue<T>[]): T;
+	from(array: ArrayLike<InferViewValue<T>>): T;
+	from<U>(array: ArrayLike<U>, mapfn: (v: U, k: number) => InferViewValue<T>, thisArg?: any): T;
+	from(elements: Iterable<InferViewValue<T>>): T;
+	from<U>(elements: Iterable<U>, mapfn?: (v: U, k: number) => InferViewValue<T>, thisArg?: any): T;
+};
+
+//export type ViewInstance<V> = V extends new(a: SharedArrayBuffer, o: number, l: number) => infer T ? T : never;
+
+// I am not happy about this, but I can't find a way to avoid ArrayBuffer without it
+export type ViewInstance<V> = 
+    V extends typeof Uint8Array		? Uint8Array<ArrayBufferLike>		:
+    V extends typeof Int8Array		? Int8Array<ArrayBufferLike>		:
+    V extends typeof Uint16Array	? Uint16Array<ArrayBufferLike>		:
+    V extends typeof Int16Array		? Int16Array<ArrayBufferLike>		:
+    V extends typeof Uint32Array	? Uint32Array<ArrayBufferLike>		:
+    V extends typeof Int32Array		? Int32Array<ArrayBufferLike>		:
+    V extends typeof Float32Array	? Float32Array<ArrayBufferLike>		:
+    V extends typeof Float64Array	? Float64Array<ArrayBufferLike>		:
+    V extends typeof BigUint64Array	? BigUint64Array<ArrayBufferLike>	:
+    V extends typeof BigInt64Array	? BigInt64Array<ArrayBufferLike>	:
+    V extends new(a: ArrayBufferLike, o: number, l: number) => infer T ? T : never;
 
 interface TypedArrayBacking<R> {
 	byteLength: number,
@@ -680,6 +891,8 @@ interface TypedArrayBacking<R> {
 type TypedArrayBackingFactory<R> = (buffer: ArrayBufferLike, byteOffset: number, begin: number, length: number) => TypedArrayBacking<R>;
 
 function TypedArray<R>(backingFactory: TypedArrayBackingFactory<R>, BYTES_PER_ELEMENT?: number) {
+	const bpe = BYTES_PER_ELEMENT ?? 1;
+
 	function make(buffer: ArrayBufferLike, byteOffset: number, begin: number, length: number): TypedArray<R> {
 		const backing = backingFactory(buffer, byteOffset, begin, length);
 		return new Proxy(Object.assign(Object.create(TypedArrayProto), {
@@ -725,15 +938,56 @@ function TypedArray<R>(backingFactory: TypedArrayBackingFactory<R>, BYTES_PER_EL
 		}) as TypedArray<R>;
 	}
 
-	return Object.assign(function(a: ArrayBufferLike, offset?: number, length?: number) {
-		return make(a, offset ?? 0, 0, length ?? (a.byteLength - (offset ?? 0)) / (BYTES_PER_ELEMENT ?? 1));
+	function create(n: number) {
+		return make(new ArrayBuffer(Math.ceil(n * bpe)), 0, 0, n);
+	}
+	function fromArray(array: ArrayLike<R>) {
+		const r = create(array.length);
+		r.set(array);
+		return r;
+	}
+	function fromBuffer(buffer: ArrayBufferLike, byteOffset = 0, byteLength = buffer.byteLength - byteOffset) {
+		return make(buffer, byteOffset, 0, Math.floor(byteLength / bpe));
+	}
+
+	return Object.assign(function(...args: any[]) {
+		if (args.length > 1) {
+			const [buffer, byteOffset, length] = args as [ArrayBufferLike, number, number?];
+			return make(buffer, byteOffset, 0, length ?? Math.floor((buffer.byteLength - byteOffset) / bpe));
+		}
+		const a = args[0];
+		if (a === undefined)
+			return create(0);
+		if (typeof a === "number")
+			return create(a);
+		if (a instanceof ArrayBuffer)
+			return fromBuffer(a);
+		if (ArrayBuffer.isView(a))
+			return fromBuffer(a.buffer, a.byteOffset, a.byteLength);
+		return fromArray(typeof (a as any)[Symbol.iterator] === 'function' ? Array.from(a as Iterable<R>) : a as ArrayLike<R>);
 	}, {
-		BYTES_PER_ELEMENT
-	}) as any as ViewMaker<TypedArray<R>>;
+		BYTES_PER_ELEMENT,
+		from(a: ArrayLike<R>|Iterable<R>, mapfn?: (v: R, k: number) => R, thisArg?: any): TypedArray<R> {
+			if (!mapfn) {
+				if (a instanceof ArrayBuffer)
+					return fromBuffer(a);
+				if (ArrayBuffer.isView(a))
+					return fromBuffer(a.buffer, a.byteOffset, a.byteLength);
+			}
+			const array	= typeof (a as any)[Symbol.iterator] === 'function'
+				? (mapfn ? Array.from(a as Iterable<R>, mapfn, thisArg) : Array.from(a as Iterable<R>))
+				: (mapfn ? Array.from(a as ArrayLike<R>, mapfn, thisArg) : Array.from(a as ArrayLike<R>));
+			return fromArray(array);
+		},
+		of(...items: R[]): TypedArray<R> {
+			return fromArray(items);
+		}
+
+	}) as any as ViewMaker2<TypedArray<R>>;
 }
 
-type NumberT<N extends number> = IfMultipleOf8<N, N extends UpTo56 ? number : bigint, N extends UpTo32 ? number : bigint>;
-
+/*
+type NumberT<N extends number> = N extends UpTo52 ? number : bigint;//IfMultipleOf8<N, N extends UpTo56 ? number : bigint, N extends UpTo32 ? number : bigint>;
 export function UintTypedArray<N extends number>(bits: N, be?: boolean): ViewMaker<TypedArray<NumberT<N>>> {
 	if ((bits & 7) === 0) {
 		const bytes = (bits + 7) >> 3;
@@ -767,15 +1021,15 @@ export function UintTypedArray<N extends number>(bits: N, be?: boolean): ViewMak
 		});
 	}
 }
-
-export function BitAdapterTypedArray<D>(adapter: BitAdapter<any, D>, be?: boolean): ViewMaker<TypedArray<D>> {
+*/
+export function BitAdapterTypedArray<D>(adapter: BitAdapter<any, D>, be?: boolean): ViewMaker2<TypedArray<D>> {
 	const bits	= adapter.bits;
 	if ((bits & 7) === 0) {
 		const bytes	= (bits + 7) >> 3;
 		return TypedArray((buffer: ArrayBufferLike, byteOffset: number, begin: number, length: number) => {
 			const byteLength = length * bytes;
 			const dv = new DataView(buffer, byteOffset + begin * bytes, byteLength);
-			return bits > 32 ? {
+			return bits > 52 ? {
 				byteLength,
 				get(index: number)				{ return adapter.to(getBigUint(dv, index * bytes, bytes, !be)); },
 				set(index: number, value: any)	{ putBigUint(dv, index * bytes, adapter.from(value) as bigint, bytes, !be); }
@@ -799,24 +1053,46 @@ export function BitAdapterTypedArray<D>(adapter: BitAdapter<any, D>, be?: boolea
 				get(index: number)				{ return adapter.to(getUintBits(dv, shift + index * bits, bits, !be)); },
 				set(index: number, value: any)	{ putUintBits(dv, shift + index * bits, adapter.from(value) as number, bits, !be); }
 			};
-		});
+		}, bits / 8);
 	}
 }
 
-type INumberT<N extends number> = N extends UpTo32 ? number : bigint;
+export function UintTypedArray<N extends number>(bits: N, be?: boolean) {
+	let to		= (x: any) => x;
+	let from	= (x: any) => x;
+	if (bits > 32 && bits <= 52) {
+		to		= (x: bigint) => Number(x);
+		from	= (x: number) => BigInt(x);
+	}
+	return BitAdapterTypedArray({bits, to, from} as BitAdapter<BitInput<N>, BitInput<N>>, be);
+}
 
-export function IntTypedArray<N extends number>(bits: N, be?: boolean): ViewMaker<TypedArray<INumberT<N>>> {
-	const to = bits > 32
-		? (x: bigint) => toSignedBig(x, bits)
-		: (x: number) => toSigned(x, bits);
+export function IntTypedArray<N extends number>(bits: N, be?: boolean) {
+	let to;
+	let from = (x: any) => x;
 
-	return BitAdapterTypedArray({bits, to, from: (x: any) => x} as unknown as BitAdapter<INumberT<N>, INumberT<N>>, be);
+	if (bits > 52) {
+		const m = 1n << BigInt(bits - 1);
+		to = (x: bigint) => (x & (m - 1n)) - (x & m);
+	} else if (bits > 32) {
+		const m = 2 ** (bits - 1);
+		to = (x: number|bigint) => {
+			const y = Number(x);
+			return y >= m ? y - 2 * m : y;
+		};
+		from = (x: number) => BigInt(x);
+	} else {
+		const m = 1 << (bits - 1);
+		to = (x: number) => (x & (m - 1)) - (x & m);
+	}
+
+	return BitAdapterTypedArray({bits, to, from} as unknown as BitAdapter<BitInput<N>, BitInput<N>>, be);
 }
 
 type DataViewType = 'Uint8' | 'Int8' | 'Uint16' | 'Uint32' | 'BigUint64' | 'Int16' | 'Int32' | 'BigInt64' | 'Float32' | 'Float64';
 type DataViewReturnType<T extends DataViewType> = T extends 'BigUint64' ? bigint : T extends 'BigInt64' ? bigint : number;
 
-const typedArrays: Record<DataViewType, ViewMaker<TypedArray>> = {
+const typedArrays: Record<DataViewType, ViewMaker2<TypedArray>> = {
 	Uint8: 		Uint8Array,
 	Int8: 		Int8Array,
 	Uint16: 	Uint16Array,
@@ -963,7 +1239,9 @@ function _decodeText(view: TypedArray<number>): string {
 	return result;
 }
 
-export function decodeText(buf: TypedArray<number>, encoding: TextEncoding = 'utf8'): string {
+export function decodeText(buf: TypedArray<number> | null, encoding: TextEncoding = 'utf8'): string {
+	if (!buf)
+		return '';
 	return encoding === 'utf8'
 		? new TextDecoder('utf-8').decode(buf)
 		: _decodeText(textView(buf, encoding));
@@ -982,11 +1260,155 @@ export function decodeTextTo0(buf: TypedArray<number> | undefined, encoding: Tex
 		: _decodeText(sub);
 }
 
+const boms: Record<TextEncoding, number[]> = {
+	utf8: [0xEF, 0xBB, 0xBF],
+	utf16le: [0xFF, 0xFE],
+	utf16be: [0xFE, 0xFF],
+	utf32le: [0xFF, 0xFE, 0x00, 0x00],
+	utf32be: [0x00, 0x00, 0xFF, 0xFE]
+};
+const enc_masks: (TextEncoding | '')[] = [
+	'',			//0000
+	'utf32le',	//0001
+	'utf32le',	//0010
+	'utf32le',	//0011
+	'utf32be',	//0100
+	'utf16le',	//0101
+	'',			//0110
+	'utf32le',	//0111
+	'utf32be',	//1000
+	'',			//1001
+	'utf16be',	//1010
+	'',			//1011
+	'utf32be',	//1100
+	'',			//1101
+	'utf32be',	//1110
+	'utf8',		//1111
+];
+
 export function getTextEncoding(bytes: ArrayLike<number>): TextEncoding {
-	return	bytes.length >= 3 && bytes[0] === 0xEF && bytes[1] === 0xBB && bytes[2] === 0xBF ?'utf8'
-		:	bytes.length >= 2 && bytes[0] === 0xFE && bytes[1] === 0xFF ? 'utf16be'
-		:	bytes.length >= 2 && bytes[0] === 0xFF && bytes[1] === 0xFE ? 'utf16le'
-		:	bytes.length >= 2 && bytes[0] === 0 && bytes[1] !== 0 ? 'utf16be'
-		:	bytes.length >= 2 && bytes[0] !== 0 && bytes[1] === 0 ? 'utf16le'
-		: 	'utf8';
+	for (const i in boms) {
+		const bom = boms[i as TextEncoding];
+		if (bytes.length >= bom.length && bom.every((b, j) => bytes[j] === b))
+			return i as TextEncoding;
+	}
+
+	let mask = 0;
+	for (let i = 0; i < Math.min(bytes.length, 4); i++)
+		mask |= (bytes[i] !== 0 ? 1 << i : 0);
+	return enc_masks[mask] || 'utf8';
+}
+
+//-----------------------------------------------------------------------------
+//	misc
+//-----------------------------------------------------------------------------
+
+export interface CRC<T extends number|bigint> {
+	more(data: Uint8Array, crc: T): T;
+	finish(crc: T): T;
+	byte(crc: T, i: number): T;
+	buffer(data: Uint8Array, crc?: T): T;
+}
+
+//	init and finalXor are accepted as-is; result is normalized at return.
+//	For standards-compatible CRC model values, pass width-masked parameters.
+
+export function CRC(poly: number, initial: number, finalXor: number, refin?: boolean, refout?: boolean): CRC<number>;
+export function CRC(poly: bigint, initial: bigint, finalXor: bigint, refin?: boolean, refout?: boolean): CRC<bigint>;
+export function CRC(poly: number|bigint, initial: number|bigint, finalXor: number|bigint, refin = true, refout = refin): CRC<any> {
+	const bits = highestSetIndex(poly) + 1;
+
+	if (bits <= 32) {
+		initial		= Number(initial);
+
+		const mask		= (2 ** bits) - 1;
+		const msb		= bits > 8 ? 1 << (bits - 1) : 0x80;
+		const polyN		= refin || bits >= 8 ? Number(poly) : Number(poly) << (8 - bits);
+		const xorout	= Number(finalXor);
+
+		const finish	= refin !== refout
+			? (crc: number) => ((bitReverse(crc, bits) as number) ^ xorout) >>> 0
+			: (crc: number) => ((crc & mask) ^ xorout) >>> 0;
+
+		const table		= Uint32Array.from({length: 256}, refin
+			? (_: any, crc: number) => {
+				for (let k = 0; k < 8; k++)
+					crc = (crc & 1 ? (crc >>> 1) ^ polyN : crc >>> 1);
+				return crc;
+			} : (_: any, i: number) => {
+				let crc = bits > 8 ? i << (bits - 8) : i;
+				for (let k = 0; k < 8; k++)
+					crc = (crc & msb ? (crc << 1) ^ polyN : crc << 1);
+				return crc;
+			}
+		);
+
+		const byte = refin
+			? (crc: number, i: number) => table[(crc ^ i) & 0xff] ^ (crc >>> 8)
+			: bits > 8
+			? (crc: number, i: number) => (crc << 8) ^ table[((crc >>> (bits - 8)) ^ i) & 0xff]
+			: (crc: number, i: number) => table[(crc ^ i) & 0xff];
+
+		const more = (data: Uint8Array, crc: number) => {
+			for (const i of data)
+				crc = byte(crc, i);
+			return crc;
+		};
+
+		return refin || bits >= 8 ? {
+			more,
+			finish,
+			byte:	(crc: number, i: number) => (byte(crc, i) & mask) >>> 0,
+			buffer:	(data: Uint8Array, crc = initial) => finish(more(data, crc)),
+		} : {
+			more,
+			finish:	(crc: number) => finish(crc >> (8 - bits)),
+			byte:	(crc: number, i: number) => byte(crc << (8 - bits), i) >> (8 - bits),
+			buffer:	(data: Uint8Array, crc = initial) => finish(more(data, crc << (8 - bits)) >> (8 - bits)),
+		};
+		
+	} else {
+		initial		= BigInt(initial);
+
+		const bbits		= BigInt(bits);
+		const mask		= (1n << bbits) - 1n;
+		const msb		= 1n << (bbits - 1n);
+		const polyN		= BigInt(poly);
+		const xorout	= BigInt(finalXor);
+
+		const finish	= refin !== refout
+			? (crc: bigint) => (bitReverse(crc, bits) as bigint) ^ xorout
+			: (crc: bigint) => (crc & mask) ^ xorout;
+
+		const table		= Array.from({length: 256}, refin
+			? (_: any, i: number) => {
+				let crc = BigInt(i);
+				for (let k = 0; k < 8; k++)
+					crc = (crc & 1n ? (crc >> 1n) ^ polyN : crc >> 1n);
+				return crc;
+			} : (_: any, i: number) => {
+				let crc = BigInt(i) << BigInt(bits - 8);
+				for (let k = 0; k < 8; k++)
+					crc = (crc & msb ? (crc << 1n) ^ polyN : crc << 1n);
+				return crc;
+			}
+		);
+
+		const byte = refin
+			? (crc: bigint, i: number) => table[Number((crc ^ BigInt(i)) & 0xffn)] ^ (crc >> 8n)
+			: (crc: bigint, i: number) => (crc << 8n) ^ table[Number(((crc >> BigInt(bits - 8)) ^ BigInt(i)) & 0xffn)];
+
+		const more = (data: Uint8Array, crc: bigint) => {
+			for (const i of data)
+				crc = byte(crc, i);
+			return crc;
+		};
+
+		return {
+			more,
+			finish,
+			byte:	(crc: bigint, i: number) => byte(crc, i) & mask,
+			buffer:	(data: Uint8Array, crc = initial) => finish(more(data, crc)),
+		};
+	}
 }

@@ -1,17 +1,17 @@
 import type { ReadType } from './sync';
-import { after, MaybePromise, ViewMaker, TypedArray, TypedArrayLike } from './utils';
+import { after, MaybePromise, ViewMaker, ViewInstance, TypedArray, TypedArrayLike } from './utils';
 
 //-----------------------------------------------------------------------------
 //	stream
 //-----------------------------------------------------------------------------
 
-export type viewDelegate = <T extends TypedArrayLike>(type: ViewMaker<T>, offset: number, len: number) => MaybePromise<T>;
+export type viewDelegate = <V extends ViewMaker<any>>(type: V, offset: number, len: number) => MaybePromise<ViewInstance<V>>;
 
 export class _stream {
 	readonly kind = 'async' as const;
 	atend?: (s: _stream) => Promise<void>;
 
-	protected offset0;
+	protected readonly offset0;
 
 	constructor(
 		private viewDelegate: viewDelegate,
@@ -23,11 +23,12 @@ export class _stream {
 		this.offset0 = offset;
 	}
 
-	protected view_absolute<T extends TypedArrayLike>(type: ViewMaker<T>, offset: number, len: number): MaybePromise<T> {
+	protected view_absolute<V extends ViewMaker<any>>(type: V, offset: number, len: number) {
 		return this.viewDelegate(type, offset, len);
 	}
 
 	get masterOffset()	{ return this.offset0; }
+
 	tell() {
 		return this.offset - this.offset0;
 	}
@@ -46,7 +47,7 @@ export class _stream {
 		return this.end === undefined ? undefined : this.end - this.tell();
 	}
 
-	view<T extends TypedArrayLike>(type: ViewMaker<T>, len: number, strict = true): MaybePromise<T> {
+	view<V extends ViewMaker<any>>(type: V, len: number, strict = true) {
 		const bytesPerElement = type.BYTES_PER_ELEMENT || 1;
 		const byteLength = len * bytesPerElement;
 
@@ -54,9 +55,10 @@ export class _stream {
 			len = Math.floor((this.end - this.tell()) / bytesPerElement);
 
 		return after(this.view_absolute(type, this.offset, len), result => {
-			if (strict && result.byteLength < byteLength)
+			const r = result as TypedArrayLike;
+			if (strict && r.byteLength < byteLength)
 				throw new Error('stream: out of bounds');
-			this.offset += result.byteLength;
+			this.offset += r.byteLength;
 			return result;
 		});
 	}
@@ -86,7 +88,7 @@ export class _stream {
 	async write_view<T extends TypedArray>(buf: T) {
 		(await this.view(Uint8Array, buf.length)).set(buf);
 	}
-	view_at<T extends TypedArrayLike>(type: ViewMaker<T>, offset: number, len?: number) {
+	view_at<V extends ViewMaker<any>>(type: V, offset: number, len?: number) {
 		return this.view_absolute(type, this.offset0 + offset, len ?? (this.end !== undefined ? this.end - offset : 0));
 	}
 	async peek(len: number) {
@@ -230,13 +232,78 @@ export class stream extends _stream {
 export interface TypeReaderT<T> { get(s: _stream): MaybePromise<T> }
 export interface TypeWriterT<T> { put(s: _stream, v: T): MaybePromise<void> }
 export type TypeT<T>	= TypeReaderT<T> & TypeWriterT<T>;
-export type TypeX0<T>	= ((s: _stream, value?: T)=>MaybePromise<T>) | T
-export type TypeX<T>	= TypeT<T> | TypeX0<T>;
 
 export type TypeReader	= TypeReaderT<any> | { [key: string]: TypeReader; } | readonly TypeReaderT<any>[]
 export type TypeWriter	= TypeWriterT<any> | { [key: string]: TypeWriter; } | readonly TypeWriterT<any>[]
 export type Type 		= TypeT<any> | { [key: string]: Type; } | readonly TypeT<any>[]
 
+//-----------------------------------------------------------------------------
+// asynchronous versions of read/write
+//-----------------------------------------------------------------------------
+
+//export type TypeX0<T>	= ((s: _stream, value?: T)=>MaybePromise<T>) | T
+//export type TypeX<T>	= TypeT<T> | TypeX0<T>;
+
+function isReader(type: any): type is TypeReaderT<any> {
+	return typeof type.get === 'function';
+}
+function isWriter(type: any): type is TypeWriterT<any> {
+	return typeof type.put === 'function';
+}
+
+export async function read<T extends TypeReader>(s: _stream, spec: T, obj?: any) : Promise<ReadType<T>> {
+	if (isReader(spec))
+		return spec.get(s);
+
+	if (!obj)
+		obj = {obj: s.obj} as any;
+	s.obj	= obj;
+
+	await Object.entries(spec).reduce((acc: any, [k, t]) => 
+		acc.then(() => read(s, t).then(value => obj[k] = value))
+	, Promise.resolve());
+
+	s.obj	= obj.obj;
+	delete obj.obj;
+	return obj;
+}
+
+export async function write(s: _stream, type: TypeWriter, value: any) : Promise<void> {
+	if (isWriter(type)) {
+		await type.put(s, value);
+		return;
+	}
+
+	if (typeof value === 'object' && value !== null) {
+		value.obj = s.obj;
+		s.obj = value;
+	}
+
+	await Object.entries(type).reduce((acc: any, [k, t]) => 
+		acc.then(() => write(s, t, value[k]))
+	, Promise.resolve());
+
+	if (typeof value === 'object' && value !== null) {
+		s.obj = value.obj;
+		delete value.obj;
+	}
+}
+
+//export async function readx<T extends object | number | string | boolean>(s: _stream, type: TypeX<T>): Promise<T> {
+//	return typeof type === 'function'	? type(s)
+//		:	isReader(type)				? type.get(s)
+//		:	type;
+//}
+//export async function writex<T extends object | number | string>(s: _stream, type: TypeX<T>, value: T): Promise<T> {
+//	return typeof type === 'function'	? type(s, value)
+//		:	isWriter(type)				? after(type.put(s, value), () => value)
+//		:	type;
+//}
+
+//-----------------------------------------------------------------------------
+//	Class
+//-----------------------------------------------------------------------------
+/*
 export interface WithStaticGet {
 	get:<X extends abstract new (...args: any) => any>(this: X, s: _stream) => Promise<InstanceType<X>>
 }
@@ -300,54 +367,4 @@ export function Extend<B extends (abstract new (...args: any[]) => any) & WithSt
 	type BaseData = B extends new (data: infer D) => any ? D : never;
 	return Class as unknown as (new(data: BaseData & ReadType<T>) => InstanceType<B> & ReadType<T> & WithWrite) & WithStaticGet & WithStaticPut;
 }
-
-//-----------------------------------------------------------------------------
-// asynchronous versions of read/write
-//-----------------------------------------------------------------------------
-
-function isReader(type: any): type is TypeReaderT<any> {
-	return typeof type.get === 'function';
-}
-function isWriter(type: any): type is TypeWriterT<any> {
-	return typeof type.put === 'function';
-}
-
-export async function read<T extends TypeReader>(s: _stream, spec: T, obj?: any) : Promise<ReadType<T>> {
-	if (isReader(spec))
-		return spec.get(s);
-
-	if (!obj)
-		obj = {obj: s.obj} as any;
-	s.obj	= obj;
-
-	await Object.entries(spec).reduce((acc: any, [k, t]) => 
-		acc.then(() => read(s, t).then(value => obj[k] = value))
-	, Promise.resolve());
-
-	s.obj	= obj.obj;
-	delete obj.obj;
-	return obj;
-}
-
-export async function write(s: _stream, type: TypeWriter, value: any) : Promise<void> {
-	if (isWriter(type)) {
-		await type.put(s, value);
-		return;
-	}
-	s.obj = value;
-
-	await Object.entries(type).reduce((acc: any, [k, t]) => 
-		acc.then(() => write(s, t, value[k]))
-	, Promise.resolve());
-}
-
-export async function readx<T extends object | number | string | boolean>(s: _stream, type: TypeX<T>): Promise<T> {
-	return typeof type === 'function'	? type(s)
-		:	isReader(type)				? type.get(s)
-		:	type;
-}
-export async function writex<T extends object | number | string>(s: _stream, type: TypeX<T>, value: T): Promise<T> {
-	return typeof type === 'function'	? type(s, value)
-		:	isWriter(type)				? after(type.put(s, value), () => value)
-		:	type;
-}
+*/

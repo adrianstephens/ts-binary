@@ -1,17 +1,16 @@
-// (Removed invalid export and debug/test types that referenced missing types)
-import { TypedArray, TypedArrayLike, ViewMaker, NoPromise, UnionToIntersection } from './utils';
+import { TypedArray, ViewMaker, ViewInstance, NoPromise, UnionToIntersection } from './utils';
 
 //-----------------------------------------------------------------------------
 //	stream
 //-----------------------------------------------------------------------------
 
-export type viewDelegate = <T extends TypedArrayLike>(type: ViewMaker<T>, offset: number, len: number) => T;
+export type viewDelegate = <V extends ViewMaker<any>>(type: V, offset: number, len: number) => ViewInstance<V>;
 
 export class _stream {
 	readonly kind = 'sync' as const;
 	atend?: (s: _stream) => void;
 
-	protected offset0;
+	protected readonly offset0;
 
 	constructor(
 		private viewDelegate: viewDelegate,
@@ -23,11 +22,12 @@ export class _stream {
 		this.offset0 = offset;
 	}
 
-	// Always merge resolved value types for each field, never raw readers/writers
-protected view_absolute<T extends TypedArrayLike>(type: ViewMaker<T>, offset: number, len: number): T {
-	return this.viewDelegate(type, offset, len);
-}
+	protected view_absolute<V extends ViewMaker<any>>(type: V, offset: number, len: number) {
+		return this.viewDelegate(type, offset, len);
+	}
+
 	get masterOffset()	{ return this.offset0; }
+
 	tell() {
 		return this.offset - this.offset0;
 	}
@@ -46,7 +46,7 @@ protected view_absolute<T extends TypedArrayLike>(type: ViewMaker<T>, offset: nu
 		return this.end === undefined ? undefined : this.end - this.tell();
 	}
 
-	view<T extends TypedArrayLike>(type: ViewMaker<T>, len: number, strict = true): T {
+	view<V extends ViewMaker<any>>(type: V, len: number, strict = true) {
 		const bytesPerElement = type.BYTES_PER_ELEMENT || 1;
 		const byteLength = len * bytesPerElement;
 		
@@ -81,13 +81,13 @@ protected view_absolute<T extends TypedArrayLike>(type: ViewMaker<T>, offset: nu
 	write_view<T extends TypedArray>(buf: T) {
 		this.view(Uint8Array, buf.length).set(buf);
 	}
-	view_at<T extends TypedArrayLike>(type: ViewMaker<T>, offset: number, len?: number) {
+	view_at<V extends ViewMaker<any>>(type: V, offset: number, len?: number) {
 		return this.view_absolute(type, this.offset0 + offset, len ?? (this.end !== undefined ? this.end - offset : 0));
 	}
 	peek(len: number) {
 		return this.view_at(Uint8Array, this.tell(), len);
 	}
-	read<T extends TypeReader>(spec: T) { return read(this, spec); }
+	read<T extends TypeReader>(spec: T, obj?: any) { return read(this, spec, obj); }
 	write<T extends TypeWriter>(type: T, value: ReadType<T>) { return write(this, type, value); }
 
 	[Symbol.dispose]() {
@@ -209,77 +209,12 @@ export type ReadType<T> = T extends {new (s: infer _S extends _stream): infer R}
 	: never;
 
 
-export interface WithStaticGet {
-	get:<X extends abstract new (...args: any) => any>(this: X, s: _stream) => InstanceType<X>
-}
-export interface WithStaticPut {
-	put:(s: _stream, v: any) => void
-}
-
-export function ReadClass<T extends TypeReader>(spec: T) {
-	return class {
-		static get(s: _stream) {
-			return new this(s);
-		}
-		constructor(s: _stream) {
-			return Object.assign(this, read(s, spec));
-		}
-	} as (new(s: _stream) => ReadType<T>) & WithStaticGet;
-}
-
-export function Class<T extends Type>(spec: T) {
-	return class Class {
-		static get(s: _stream) {
-			return new this(s);
-		}
-		static put(s: _stream, v: Class) {
-			write(s, spec, v);
-		}
-		constructor(s: _stream | ReadType<T>) {
-			if ('tell' in s)
-				return Object.assign(this, read(s, spec));
-			return Object.assign(this, s);
-		}
-		write(s: _stream) 	{
-			write(s, spec, this);
-		}
-	} as (new(s: _stream | ReadType<T>) => ReadType<T> & { write(w: _stream): void }) & WithStaticGet & WithStaticPut;
-}
-
-export function Extend<B extends (abstract new (...args: any[]) => any) & WithStaticPut, T extends Type>(base: B, spec: T) {
-	abstract class Class extends base {
-		static get(s: _stream) {
-			return new (this as any)(s);
-		}
-		static put(s: _stream, v: Class) {
-			base.put(s, v);
-			write(s, spec, v);//TBD
-		}
-		constructor(...args: any[]) {
-			super(...args);
-			if ('tell' in args[0]) {
-				const s: _stream = args[0];
-				const obj = s.obj;
-				this.obj = obj;
-				read(s, spec, this);
-				delete this.obj;
-			}
-		}
-		write(s: _stream) 	{
-			super.write?.(s);
-			write(s, spec, this);
-		}
-	};
-	type BaseData = B extends new (data: infer D) => any ? D : never;
-	return Class as unknown as (new(s: _stream | (BaseData & ReadType<T>)) => InstanceType<B> & ReadType<T>) & WithStaticGet & WithStaticPut;
-}
-
 //-----------------------------------------------------------------------------
 // synchronous versions of read/write
 //-----------------------------------------------------------------------------
 
-export type TypeX0<T>	= string | ((s: _stream, value?: T)=>T) | T
-export type TypeX<T>	= TypeT<T> | TypeX0<T>;
+//export type TypeX0<T>	= string | ((s: _stream, value?: T)=>T) | T
+//export type TypeX<T>	= TypeT<T> | TypeX0<T>;
 
 export function isReader(type: any): type is TypeReaderT<any> {
 	return typeof type.get === 'function';
@@ -312,8 +247,17 @@ export function write(s: _stream, type: TypeWriter, value: any) : void {
 		type.put(s, value);
 		return;
 	}
-	s.obj = value;
+
+	if (typeof value === 'object' && value !== null) {
+		value.obj = s.obj;
+		s.obj = value;
+	}
 	Object.entries(type).map(([k, t]) => write(s, t, value[k]));
+
+	if (typeof value === 'object' && value !== null) {
+		s.obj = value.obj;
+		delete value.obj;
+	}
 }
 
 export function readn<T extends TypeReader>(s: _stream, type: T, n: number) : ReadType<T>[] {
@@ -328,18 +272,91 @@ export function writen(s: _stream, type: any, v: any) {
 		write(s, type, i);
 }
 
-export function readx<T extends object | number | string | boolean>(s: _stream, type: TypeX<T>) {
-	return isReader(type)				? type.get(s)
-		:	getx(s, type);
+//export function readx<T extends object | number | string | boolean>(s: _stream, type: TypeX<T>) {
+//	return isReader(type)				? type.get(s)
+//		:	getx(s, type);
+//}
+//export function writex<T extends object | number | string>(s: _stream, type: TypeX<T>, value: T) {
+//	return isWriter(type)				? (type.put(s, value), value)
+//		:	typeof type === 'function'	? type(s, value)
+//		:	getx(s, type);
+//}
+//
+//export function getx<T extends object | number | string | boolean>(s: any, type: TypeX0<T>): T {
+//	return typeof type === 'function'	? type(s)
+//		:	typeof type === 'string'	? s.obj[type]
+//		:	type;
+//}
+
+
+//-----------------------------------------------------------------------------
+//	Class
+//-----------------------------------------------------------------------------
+/*
+export interface WithStaticGet {
+	get:<X extends abstract new (...args: any) => any>(this: X, s: _stream) => InstanceType<X>
 }
-export function writex<T extends object | number | string>(s: _stream, type: TypeX<T>, value: T) {
-	return isWriter(type)				? (type.put(s, value), value)
-		:	typeof type === 'function'	? type(s, value)
-		:	getx(s, type);
+export interface WithStaticPut {
+	put:(s: _stream, v: any) => void
 }
 
-export function getx<T extends object | number | string | boolean>(s: any, type: TypeX0<T>): T {
-	return typeof type === 'function'	? type(s)
-		:	typeof type === 'string'	? s.obj[type]
-		:	type;
+export function ReadClass<T extends TypeReader>(spec: T) {
+	return class {
+		static get(s: _stream) {
+			return new this(s);
+		}
+		constructor(s: _stream | ReadType<T>) {
+			if (s instanceof _stream)
+				s = s.read(spec);
+			return Object.assign(this, s);
+		}
+	} as (new(s: _stream) => ReadType<T>) & WithStaticGet;
 }
+
+export function Class<T extends Type>(spec: T) {
+	return class Class {
+		static get(s: _stream) {
+			return new this(s);
+		}
+		static put(s: _stream, v: Class) {
+			write(s, spec, v);
+		}
+		constructor(s: _stream | ReadType<T>) {
+			if (s instanceof _stream)
+				s = s.read(spec);
+			return Object.assign(this, s);
+		}
+		write(s: _stream) 	{
+			write(s, spec, this);
+		}
+	} as (new(s: _stream | ReadType<T>) => ReadType<T> & { write(w: _stream): void }) & WithStaticGet & WithStaticPut;
+}
+
+export function Extend<B extends (abstract new (...args: any[]) => any) & WithStaticGet & WithStaticPut, T extends Type>(base: B, spec: T) {
+	abstract class Class extends base {
+		static get(s: _stream) {
+			return new (this as any)(s);
+		}
+		static put(s: _stream, v: Class) {
+			base.put(s, v);
+			write(s, spec, v);//TBD
+		}
+		constructor(...args: any[]) {
+			super(...args);
+			if (args[0] instanceof _stream) {
+				const s: _stream = args[0];
+				const obj = s.obj;
+				this.obj = obj;
+				read(s, spec, this);
+				delete this.obj;
+			}
+		}
+		write(s: _stream) 	{
+			super.write?.(s);
+			write(s, spec, this);
+		}
+	};
+	type BaseData = B extends new (data: infer D) => any ? D : never;
+	return Class as unknown as (new(s: _stream | (BaseData & ReadType<T>)) => InstanceType<B> & ReadType<T>) & WithStaticGet & WithStaticPut;
+}
+*/

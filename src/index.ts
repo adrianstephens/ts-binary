@@ -1,14 +1,16 @@
 export * from './sync';
-export * as utils from './utils';
-export { BitField, BitFields} from './utils';
-export * as async from './async';
-export * as bit from './bit';
 export * from './types';
+export { BitField } from './utils';
+export * as async from './async';
+export * as utils from './utils';
+export * as interop from './interop';
+export { ReadClass, Class, Extend } from './interop';
+export * as bit from './bit';
 
 import * as utils from './utils';
 import { ReadType } from './sync';
-import { as, Type2, TypeT2 } from './types';
-
+import { as } from './types';
+import * as interop from './interop';
 
 //-----------------------------------------------------------------------------
 // apply names to array elements
@@ -21,11 +23,11 @@ export function withNames<T>(array: T[], func:(v: T, i: number)=>string) : [stri
 export const field = (field: string) 	=> (v: any) => v[field];
 export const names = (names: string[])	=> (v: any, i: number) => names[i];
 
-export function arrayWithNames<T extends Type2>(type: T, func:(v: any, i: number)=>string) {
+export function arrayWithNames<T extends interop.Type>(type: T, func:(v: any, i: number)=>string) {
 	return as(type, array => withNames(array, func), v => v.map(([, v]) => v) as ReadType<T>);
 }
 
-export function objectWithNames<T extends Type2>(type: T, func:(v: any, i: number)=>string) {
+export function objectWithNames<T extends interop.Type>(type: T, func:(v: any, i: number)=>string) {
 	return as(type, array => Object.fromEntries(withNames(array, func)), v => Object.values(v) as ReadType<T>);
 }
 
@@ -39,15 +41,15 @@ export class hex<T extends number | bigint> {
 	toString()	{ return '0x' + this.value.toString(16); }
 };
 
-export function asHex(type: TypeT2<number> | TypeT2<bigint> | TypeT2<number|bigint>): TypeT2<hex<number|bigint>> {
-	return as(type as any, hex as any) as TypeT2<hex<number|bigint>>;
+export function asHex(type: interop.TypeT<number> | interop.TypeT<bigint> | interop.TypeT<number|bigint>): interop.TypeT<hex<number|bigint>> {
+	return as(type as any, hex as any) as interop.TypeT<hex<number|bigint>>;
 }
 
 //-----------------------------------------------------------------------------
 // convert strings to integers
 //-----------------------------------------------------------------------------
 
-export function asInt<T extends string>(type: TypeT2<T>, radix = 10) {
+export function asInt<T extends string>(type: interop.TypeT<T>, radix = 10) {
 	return as(type, x => parseInt(x.trim(), radix));
 }
 
@@ -55,12 +57,12 @@ export function asInt<T extends string>(type: TypeT2<T>, radix = 10) {
 // convert integers to fixed point
 //-----------------------------------------------------------------------------
 
-export function asFixed<T extends number>(type: TypeT2<T>, fracbits: number) {
+export function asFixed<T extends number>(type: interop.TypeT<T>, fracbits: number) {
 	const scale = 1 / (1 << fracbits);
 	return as(type, x => x * scale);
 }
 
-export function asScaled<T extends number|bigint>(type: TypeT2<T>, scale: T, digits?: number) {
+export function asScaled<T extends number|bigint>(type: interop.TypeT<T>, scale: T, digits?: number) {
 	if (typeof scale === 'bigint') {
 		return as(type, _x => {
 			const x = BigInt(_x);
@@ -152,10 +154,10 @@ export function Enum<V extends number|bigint, E extends TSEnum|Record<string, V>
 	};
 }
 
-export function asEnum<V extends number|bigint, E extends TSEnum|Record<string, V>>(type: TypeT2<V>, e: E): TypeT2<string> {
+export function asEnum<V extends number|bigint, E extends TSEnum|Record<string, V>>(type: interop.TypeT<V>, e: E): interop.TypeT<string> {
 	return as(type, Enum(e));
 }
-export function asEnum2<V extends number|bigint, E extends TSEnum|Record<string, V>>(type: TypeT2<V>, e: E) {
+export function asEnum2<V extends number|bigint, E extends TSEnum|Record<string, V>>(type:interop.TypeT<V>, e: E) {
 	const toString = Enum(e).to;
 	return as(type, v => ({ valueOf: () => v, toString: () => toString(v) }));
 }
@@ -203,10 +205,10 @@ export function Flags<V extends number | bigint>(e: TSEnum|Record<string, V>, no
 		}
 	};
 }
-export function asFlags<V extends number | bigint>(type: TypeT2<V>, e: TSEnum|Record<string, V>, noFalse = true) {
+export function asFlags<V extends number | bigint>(type: interop.TypeT<V>, e: TSEnum|Record<string, V>, noFalse = true) {
 	return as(type, Flags(e, noFalse));
 }
-export function asFlags2<V extends number | bigint>(type: TypeT2<V>, e: TSEnum|Record<string, V>, noFalse = true) {
+export function asFlags2<V extends number | bigint>(type: interop.TypeT<V>, e: TSEnum|Record<string, V>, noFalse = true) {
 	const toString = Flags(e, noFalse).to;
 	return as(type, v => ({ valueOf: () => v, toString: () => toString(v) }));
 }

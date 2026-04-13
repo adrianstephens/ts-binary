@@ -1,8 +1,8 @@
 import * as async from './async';
 import * as sync from './sync';
+import * as interop from './interop';
 import * as utils from './utils';
 import { after, BitsType, MaybePromise, TypedArrayLike, ViewMaker } from './utils';
-import { readx2, Type2, TypeT2, TypeX2, writex2 } from './types';
 
 type ReadType<T> = sync.ReadType<T>;
 
@@ -194,9 +194,9 @@ interface TypeT<T> {
 	put(s: _stream, v: T): MaybePromise<void>;
 }
 
-type Type = TypeT<any> | { [key: string]: Type } | readonly TypeT<any>[] | Type2;
+type Type = TypeT<any> | { [key: string]: Type } | readonly TypeT<any>[] | interop.Type;
 
-export function WithBits<T extends Type>(type: T): TypeT2<ReadType<T>> {
+export function WithBits<T extends Type>(type: T): interop.TypeT<ReadType<T>> {
 	return {
 		get: ((s: sync._stream | async._stream) => {
 			if (s.kind === 'sync') {
@@ -248,8 +248,8 @@ export const Bit = {
 
 export function Bits<N extends number>(n: N): TypeT<BitsType<N>>;
 export function Bits(n: number): TypeT<number|bigint>;
-export function Bits(n: TypeX2<number>): TypeT<number|bigint>;
-export function Bits(n: TypeX2<number>) {
+export function Bits(n: interop.TypeX<number>): TypeT<number|bigint>;
+export function Bits(n: interop.TypeX<number>) {
 
 	function readBitsN(s: _stream, n: number) {
 		const pos = s.tell_bit();
@@ -289,9 +289,10 @@ export function Bits(n: TypeX2<number>) {
 			put(s: _stream, v: bigint) { return writeBitsB(s, n, v); }
 		};
 	} else {
+		const n2 = interop.makex(n);
 		return {
-			get(s: _stream) { return after(readx2(s as any, n), n => n <= 32 ? readBitsN(s, n) : readBitsB(s, n)); },
-			put(s: _stream, v: number|bigint) { return after(writex2(s as any, n, Number(v)), n => n <= 32 ? writeBitsN(s, n, Number(v)) : writeBitsB(s, n, BigInt(v))); }
+			get(s: _stream) { return after(n2.get(s as any), n => n <= 32 ? readBitsN(s, n) : readBitsB(s, n)); },
+			put(s: _stream, v: number|bigint) { return after(n2.put(s as any, Number(v)), n => n <= 32 ? writeBitsN(s, n, Number(v)) : writeBitsB(s, n, BigInt(v))); }
 		};
 	}
 }
