@@ -681,7 +681,7 @@ export function Optional<T extends Type, F extends Type | undefined = undefined>
 			return undefined as R;
 		})) as get<R>,
 		put: ((s, v) => {
-			after(x.put(s, v),
+			return after(x.put(s, v),
 				t => t !== undefined ? write(s, t ? type : false_type as Type, v) : undefined
 			);
 			//const t = discriminator(v);
@@ -698,7 +698,7 @@ export function Try<T extends Record<string, Type>>(type: T) {
 			const obj = {obj: s.obj} as any;
 			s.obj	= obj;
 			let tell = s.tell();
-			tryAfter(() => {
+			return tryAfter(() => {
 				let acc: any = undefined;
 				for (const [k, t] of Object.entries(type)) {
 					acc = after(acc, () => {
@@ -725,7 +725,7 @@ export function Try<T extends Record<string, Type>>(type: T) {
 		put: ((s, v) => {
 			s.obj = v;
 			let tell = s.tell();
-			tryAfter(() => {
+			return tryAfter(() => {
 				let acc: any = undefined;
 				for (const [k, t] of Object.entries(type)) {
 					const v1 = (v as any)[k];
@@ -817,22 +817,11 @@ export function If<T extends Type, F extends Type | undefined = undefined>(test:
 			false_type ? read_merge2(s, x ? true_type : false_type) : x ? read_merge2(s, true_type) : undefined,
 			() => ({} as MergeType<R>)
 		))) as get<MergeType<R>>,
-		put: ((s, v) => {
-			after(x.put(s, v),
+		put: ((s, v) => after(x.put(s, v),
 				t => false_type && t !== undefined ? write(s, t ? true_type : false_type as Type, v)
 					: t && write(s, true_type, v)
-			);
-/*
-			if (!isWriter(test)) {
-				const x = getx(s, test);
-				return false_type ? write(s, x ? true_type : false_type as Type, v) : x && write(s, true_type, v);
-			}
-			const x = discriminator(v);
-			if (x !== undefined)
-				return after(writex(s, test, x as any),
-					() => false_type ? write(s, x ? true_type : false_type as Type, v) : x && write(s, true_type, v)
-				);*/
-		}) as put<MergeType<R>>
+			)
+		) as put<MergeType<R>>
 	};
 }
 
@@ -870,7 +859,7 @@ export function Switch<KName extends string, K extends string | number, T extend
 				return t && read(s, t);
 			})) as get<R>,
 			put: ((s, v) => {
-				after(x.put(s, v),
+				return after(x.put(s, v),
 					key => {
 						const t = lookup(key);
 						return t ? write(s, t, v) : undefined;

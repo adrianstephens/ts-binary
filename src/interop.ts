@@ -10,7 +10,33 @@ export type stream = _stream & {
 }
 
 export function stream(s: _stream): stream {
-	return s as stream;
+	//return s as stream;	// this would use non-waiting versions of read/write if available, which is not what we want
+	const x = Object.create(Object.getPrototypeOf(s)) as stream;
+
+	Object.defineProperties(x, {
+		kind:        	{ get: () => s.kind },
+		atend:       	{ get: () => s.atend, set: v => { s.atend = v; } },
+		masterOffset:	{ get: () => s.masterOffset },
+		be:          	{ get: () => s.be, set: v => { s.be = v; } },
+		obj:         	{ get: () => s.obj, set: v => { s.obj = v; } },
+	});
+
+	return Object.assign(x, {
+		tell:         	s.tell.bind(s),
+		seek:         	s.seek.bind(s),
+		skip:         	s.skip.bind(s),
+		align:        	s.align.bind(s),
+		remaining:    	s.remaining.bind(s),
+		view:         	s.view.bind(s),
+		offsetStream: 	s.offsetStream.bind(s),
+		subStream:    	s.subStream.bind(s),
+		remainder:    	s.remainder.bind(s),
+		write_view:   	s.write_view.bind(s),
+		view_at:      	s.view_at.bind(s),
+		peek:         	s.peek.bind(s),
+		read:         	(spec: any, obj?: any) => read(s as any, spec, obj),
+		write:        	(type: any, value: any) => write(s as any, type, value),
+	});
 }
 
 //-----------------------------------------------------------------------------
@@ -91,23 +117,6 @@ export function writen(s: any, type: any, v: any) {
         after(acc, () => write(s, type, i))
     , undefined);
 }
-
-//export function readx<T extends object | number | string | boolean>(s: sync._stream, type: sync.TypeX<T>): T;
-//export function readx<T extends object | number | string | boolean>(s: async._stream, type: async.TypeX<T>): Promise<T>;
-//export function readx<T extends object | number | string | boolean>(s: sync._stream | async._stream, type: TypeX<T>): MaybePromise<T>;
-//export function readx<T extends object | number | string | boolean>(s: any, type: TypeX<T>) {
-//	return 	isReader(type)				? type.get(s)
-//		:	getx(s, type as any);
-//}
-//export function writex<T extends object | number | string>(s: sync._stream, type: sync.TypeX<T>, value: T) : T;
-//export function writex<T extends object | number | string>(s: async._stream, type: async.TypeX<T>, value: T): Promise<T>;
-//export function writex<T extends object | number | string>(s: sync._stream | async._stream, type: TypeX<T>, value: T): MaybePromise<T>;
-//export function writex<T extends object | number | string>(s: any, type: TypeX<T>, value: T) {
-//	return	isWriter(type)				? after(type.put(s, value), () => value)
-//		:	typeof type === 'function'	? type(s, value)
-//		:	getx(s, type as any);
-//}
-
 
 interface TypeTX<T, T2>	{
 	get: (s: _stream) => MaybePromise<T>;
