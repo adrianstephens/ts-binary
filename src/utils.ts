@@ -10,28 +10,46 @@ export type UpTo32 = UpTo16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 
 export type UpTo52 = UpTo32 | 33 | 34 | 35 | 36 | 37 | 38 | 39 | 40 | 41 | 42 | 43 | 44 | 45 | 46 | 47 | 48 | 49 | 50 | 51 | 52;
 export type UpTo56 = UpTo52 | 53 | 54 | 55 | 56;
 
-type TupleOf<N extends number, T extends unknown[] = []> = T['length'] extends N ? T : TupleOf<N, [...T, unknown]>;
-type Mod8Tuple<T extends unknown[]> = T extends [unknown, unknown, unknown, unknown, unknown, unknown, unknown, unknown, ...infer R] ? Mod8Tuple<R> : T['length'];
-export type IsMultipleOf8<N extends number> = number extends N ? boolean : Mod8Tuple<TupleOf<N>> extends 0 ? true : false;
-export type IfMultipleOf8<N extends number, Yes, No> = number extends N ? Yes | No : IsMultipleOf8<N> extends true ? Yes : No;
+//type TupleOf<N extends number, T extends unknown[] = []> = T['length'] extends N ? T : TupleOf<N, [...T, unknown]>;
+//type Mod8Tuple<T extends unknown[]> = T extends [unknown, unknown, unknown, unknown, unknown, unknown, unknown, unknown, ...infer R] ? Mod8Tuple<R> : T['length'];
+//export type IsMultipleOf8<N extends number> = number extends N ? boolean : Mod8Tuple<TupleOf<N>> extends 0 ? true : false;
 
 type IntRange<N extends number, T extends number[] = []> = T['length'] extends N ? T[number] : IntRange<N, [...T, T['length']]>;
 type Pow2<N extends number, T extends unknown[] = [0], I extends unknown[] = []> = I['length'] extends N ? T['length'] : Pow2<N, [...T, ...T], [...I, 0]>;
 //type Gt<A extends number, B extends number, T extends unknown[] = []> = T['length'] extends B ? (T['length'] extends A ? false : true) : T['length'] extends A ? false : Gt<A, B, [...T, 0]>;
 export type BitsType<N extends number> = number extends N ? number : N extends UpTo8 ? IntRange<Pow2<N>> : N extends UpTo32 ? number : bigint;
 
+type Pow2Number = 0x1 | 0x2 | 0x4 | 0x8 | 0x10 | 0x20 | 0x40 | 0x80
+	| 0x100 | 0x200 | 0x400 | 0x800 | 0x1000 | 0x2000 | 0x4000 | 0x8000
+	| 0x10000 | 0x20000 | 0x40000 | 0x80000 | 0x100000 | 0x200000 | 0x400000 | 0x800000
+	| 0x1000000 | 0x2000000 | 0x4000000 | 0x8000000 | 0x10000000 | 0x20000000 | 0x40000000 | 0x80000000
+	| 0x100000000 | 0x200000000 | 0x400000000 | 0x800000000 | 0x1000000000 | 0x2000000000 | 0x4000000000 | 0x8000000000
+	| 0x10000000000 | 0x20000000000 | 0x40000000000 | 0x80000000000 | 0x100000000000 | 0x200000000000 | 0x400000000000 | 0x800000000000
+	| 0x1000000000000 | 0x2000000000000 | 0x4000000000000 | 0x8000000000000 | 0x10000000000000;
+
+export type IsPow2<V> = V extends bigint ? (`${V}` extends `${infer N}n` ? N extends `${Pow2Number}` ? true : false : false) : V extends Pow2Number ? true : false;
+
+// Helper to generate all bit combinations
+export type BitCombinations<T extends number, Acc extends number = 0> =
+	[T] extends [never]
+		? Acc
+		: T extends T
+			? BitCombinations<Exclude<T, T>, Acc | T | (Acc | T)>
+			: never;
+
+
 function compare<T extends number|bigint|string>(a: T, b: T): number {
 	return a === b ? 0 : a > b ? 1 : -1;
 }
 
-export function after<V, R>(v: V, then: (value: Awaited<V>) => R): V extends Promise<any> ? Promise<R> : R {
+export function after<V, R>(v: V, then: (value: Awaited<V>) => R): V extends Promise<any> ? Promise<Awaited<R>> : R {
 	if (!(v instanceof Promise))
 		return then(v as Awaited<V>) as any;
 
 	return v.then(then) as any;
 }
 
-export function tryAfter<V, R>(initial: () => V, then: (value: Awaited<V>) => R, catchFn: (error: any) => R): V extends PromiseLike<any> ? Promise<R> : R {
+export function tryAfter<V, R>(initial: () => V, then: (value: Awaited<V>) => R, catchFn: (error: any) => R): V extends PromiseLike<any> ? Promise<Awaited<R>> : R {
 	let v: V;
 	try {
 		v = initial();
@@ -255,8 +273,15 @@ interface Adapter<T, D> {
 }
 
 type BitInput<N>	= number extends N ? number | bigint : N extends 0 ? number | bigint : N extends UpTo52 ? number : bigint;
-type BitOutput<N>	= N extends BitAdapterN<infer _, infer D> ? D : N extends UpTo52 ? number : number extends N ? number | bigint : bigint;
-export type BitsOutput<T extends Record<string, BitAdapterN<any, any> | number>> = {[K in keyof T]: BitOutput<T[K]>};
+type BitFieldDescriptor = number | BitAdapterN<any, any> | { [K: string]: BitFieldDescriptor };
+type BitOutput<T> = T extends number ? (T extends UpTo52 ? number : number extends T ? number | bigint : bigint)
+	: T extends BitAdapterN<any, infer D> ? D
+	: T extends object ? { [K in keyof T]: BitOutput<T[K]> }
+	: never;
+
+export type BitsOutput<T extends Record<string, BitFieldDescriptor>> = { [K in keyof T]: BitOutput<T[K]> };
+//type BitOutput<N>	= N extends BitAdapterN<infer _, infer D> ? D : N extends UpTo52 ? number : number extends N ? number | bigint : bigint;
+//export type BitsOutput<T extends Record<string, BitAdapterN<any, any> | number>> = {[K in keyof T]: BitOutput<T[K]>};
 
 export interface BitAdapter<T extends number|bigint, D> extends Adapter<T, D> {
 	bits: number;
@@ -269,8 +294,61 @@ export function BitField<N extends number, T>(bits: N, adapter: Adapter<BitInput
 	return { bits, ...adapter };
 }
 
-export function BitFields<N extends number, T extends Record<string, BitAdapterN<any, any> | number>>(bits: N, bitfields: T): BitAdapterN<N, BitsOutput<T>> {
-	const total	= Object.values(bitfields).reduce((sum, bf) => sum + (typeof bf === 'number' ? bf : bf.bits), 0) as number;
+export function BitChain<T extends number|bigint, D, F>(base: BitAdapter<T, D>, adapter: Adapter<D, F>): BitAdapter<T, F> {
+	return {
+		bits: base.bits,
+		to:(x: T) => adapter.to(base.to(x)),
+		from:(x: F) => base.from(adapter.from(x))
+	};
+}
+
+export function BitUnsigned<N extends number>(bits: N): BitAdapter<BitInput<N>, BitInput<N>> {
+	return bits > 32 && bits <= 52
+		? {bits, to: (x: bigint) => Number(x), from: (x: number) => BigInt(x)} as any
+		: {bits, to: (x: any) => x, from: (x: any) => x};
+}
+
+export function BitSigned<N extends number>(bits: N): BitAdapter<BitInput<N>, BitInput<N>> {
+	if (bits > 52) {
+		const m = 1n << BigInt(bits - 1);
+		return {
+			bits,
+			from: (x: any) => x,
+			to: (x: bigint) => (x & (m - 1n)) - (x & m)
+		} as any;
+	} else if (bits > 32) {
+		const m = 2 ** (bits - 1);
+		return {bits,
+			from: (x: number) => BigInt(x),
+			to: (x: number|bigint) => {
+				const y = Number(x);
+				return y >= m ? y - 2 * m : y;
+			}
+		} as any;
+	} else {
+		const m = 1 << (bits - 1);
+		return {
+			bits,
+			from: (x: any) => x,
+			to: (x: number) => (x & (m - 1)) - (x & m)
+		} as any;
+	}
+}
+
+
+//export function BitFields< N extends number, T extends { [K in keyof T]: BitAdapterN<any, any> | number }>(bits: N, bitfields: T): BitAdapterN<N, BitsOutput<T>> {
+export function BitFields<N extends number, T extends Record<string, BitFieldDescriptor>>(bits: N, bitfields0: T): BitAdapterN<N, BitsOutput<T>> {
+	const bitfields: Record<string, BitAdapterN<any, any>> = {};
+	let total = 0;
+	for (const key in bitfields0) {
+		const value	= bitfields0[key];
+		const adapter = typeof value === 'number' ? BitUnsigned(value)
+					:	typeof value.to === 'function' && typeof value.from === 'function' ? value as BitAdapterN<any, any>
+					:	BitFields(0, value as any);
+		bitfields[key] = adapter;
+		total += adapter.bits;
+	}
+
 	if (bits === 0)
 		bits = total as N;
 	else if (bits < total)
@@ -279,16 +357,14 @@ export function BitFields<N extends number, T extends Record<string, BitAdapterN
 	if (bits > 32) {
 		return {
 			bits,
-
 			to(x: number|bigint) {
 				let y = BigInt(x);
 				const obj = {} as Record<string, bigint>;
 				for (const i in bitfields) {
 					const bf	= bitfields[i];
-					const bits	= typeof bf === 'number' ? bf : bf.bits;
+					const bits	= bf.bits;
 					const v		= y & ((1n << BigInt(bits)) - 1n);
-					const v2	= bits <= 52 ? Number(v) : v;
-					obj[i] = typeof bf === 'number' ? v2 : bf.to(v2);
+					obj[i] = bf.to(bits <= 52 ? Number(v) : v);
 					y >>= BigInt(bits);
 				}
 				return obj as any;
@@ -298,10 +374,9 @@ export function BitFields<N extends number, T extends Record<string, BitAdapterN
 				let bit = 0;
 				for (const i in bitfields) {
 					const bf	= bitfields[i];
-					const bits	= typeof bf === 'number' ? bf : bf.bits;
-					const raw	= typeof bf === 'number' ? obj[i] : bf.from(obj[i]);
-					x |= (BigInt(raw) & ((1n << BigInt(bits)) - 1n)) << BigInt(bit);
-					bit += bits;
+					const bits	= bf.bits;
+					x	|= (BigInt(bf.from(obj[i])) & ((1n << BigInt(bits)) - 1n)) << BigInt(bit);
+					bit	+= bits;
 				}
 				return (bits <= 52 ? Number(x) : x) as BitInput<N>;
 			},
@@ -309,16 +384,13 @@ export function BitFields<N extends number, T extends Record<string, BitAdapterN
 	} else {
 		return {
 			bits,
-
 			to(x: number|bigint) {
 				const obj = {} as Record<string, number>;
 				let y = Number(x);
 				for (const i in bitfields) {
 					const bf	= bitfields[i];
-					const bits	= typeof bf === 'number' ? bf : bf.bits;
-					const v		= y & ((1 << bits) - 1);
-					//const v2	= bits <= 52 ? v : BigInt(v);
-					obj[i] = typeof bf === 'number' ? v : bf.to(v);
+					const bits	= bf.bits;
+					obj[i] = bf.to(y & ((1 << bits) - 1));
 					y >>= bits;
 				}
 				return obj as any;
@@ -328,15 +400,51 @@ export function BitFields<N extends number, T extends Record<string, BitAdapterN
 				let bit = 0;
 				for (const i in bitfields) {
 					const bf	= bitfields[i];
-					const bits	= typeof bf === 'number' ? bf : bf.bits;
-					const raw	= typeof bf === 'number' ? obj[i] : bf.from(obj[i]);
-					x |= (Number(raw) & ((1 << bits) - 1)) << bit;
-					bit += bits;
+					const bits	= bf.bits;
+					x	|= (Number(bf.from(obj[i])) & ((1 << bits) - 1)) << bit;
+					bit	+= bits;
 				}
 				return x as BitInput<N>;
 			},
 		};
 	}
+}
+
+export function BitArray<C extends number, N extends number>(count: C, bits: N): BitAdapter<bigint, BitInput<N>[]> {
+	const mask = (1n << BigInt(bits)) - 1n;
+	return {
+		bits: count * bits,
+		to(v: number|bigint) {
+			let x = BigInt(v);
+			return new Proxy({}, {
+				get(_target, prop) {
+					if (prop === 'length')
+						return count;
+					const index = typeof prop === 'string' ? Number(prop) : NaN;
+					if (!isNaN(index) && index >= 0 && index < count) {
+						const v = (x >> BigInt(index * bits)) & mask;
+						return bits <= 52 ? Number(v) : v;
+					}
+					return undefined;
+				},
+				set(_target, prop, value) {
+					const index = typeof prop === 'string' ? Number(prop) : NaN;
+					if (!isNaN(index) && index >= 0 && index < count) {
+						const v = (BigInt(value) & mask) << BigInt(index * bits);
+						x = (x & ~(mask << BigInt(index * bits))) | v;
+						return true;
+					}
+					return false;
+				}
+			}) as BitInput<N>[];
+		},
+		from(array:  BitInput<N>[]) {
+			let x	= 0n;
+			for (let i = 0; i < count; i++)
+				x |= (BigInt(array[i]) & mask) << BigInt(i * bits);
+			return x;
+		},
+	};
 }
 
 //-----------------------------------------------------------------------------
@@ -793,11 +901,11 @@ export function Float<M extends number>(mbits: M, ebits: number, ebias = (1 << (
 //	buffers
 //-----------------------------------------------------------------------------
 
-export interface TypedArray<R = any> {
-	buffer:			ArrayBufferLike;
+export interface TypedArray<R = any> extends ArrayBufferView {
+	//buffer:			ArrayBufferLike;
+	//byteLength:		number;
+	//byteOffset:		number;
 	length:			number;
-	byteLength:		number;
-	byteOffset:		number;
     [n: number]:	R;
 
 //	new (buffer: ArrayBufferLike, byteOffset?: number, length?: number): TypedArray<R>;
@@ -852,12 +960,12 @@ export interface TypedArrayLike {
 }
 export type ViewMaker<T> = (new(a: ArrayBufferLike, offset: number, length: number)=>T) & {BYTES_PER_ELEMENT?: number};
 type InferViewValue<T> = T extends TypedArray<infer R> ? R : never;
-export type ViewMaker2<T extends TypedArray = TypedArray> = ViewMaker<T> & {
+export interface TypedArrayConstructor<T extends TypedArray = TypedArray> {
+	BYTES_PER_ELEMENT?: number;
 	new(length: number): T;
 	new(array: ArrayLike<InferViewValue<T>>): T;
-//	new<TArrayBuffer extends ArrayBufferLike = ArrayBuffer>(buffer: TArrayBuffer, byteOffset?: number, length?: number): Uint16Array<TArrayBuffer>;
-	new(buffer: ArrayBuffer, byteOffset?: number, length?: number): T;
-	new(array: ArrayLike<InferViewValue<T>> | ArrayBuffer): T;
+//	new<TArrayBuffer extends ArrayBufferLike = ArrayBuffer>(buffer: TArrayBuffer, byteOffset?: number, length?: number): T;
+	new(buffer: ArrayBufferLike, byteOffset?: number, length?: number): T;
 	new(elements: Iterable<InferViewValue<T>>): T;
 
 	of(...items: InferViewValue<T>[]): T;
@@ -900,6 +1008,7 @@ function TypedArray<R>(backingFactory: TypedArrayBackingFactory<R>, BYTES_PER_EL
 			buffer,
 			byteOffset,
 			byteLength: backing.byteLength,
+			constructor: ctor,
 			slice(begin: number, end?: number) 			{ return make(buffer, byteOffset, begin, (end ? Math.min(end, length) : length) - begin); },
 			subarray(begin: number, end?: number) 		{ return make(buffer, byteOffset, begin, (end ? Math.min(end, length) : length) - begin); },
 			set(array: ArrayLike<R>, offset?: number)	{
@@ -950,7 +1059,7 @@ function TypedArray<R>(backingFactory: TypedArrayBackingFactory<R>, BYTES_PER_EL
 		return make(buffer, byteOffset, 0, Math.floor(byteLength / bpe));
 	}
 
-	return Object.assign(function(...args: any[]) {
+	function ctor(...args: any[]) {
 		if (args.length > 1) {
 			const [buffer, byteOffset, length] = args as [ArrayBufferLike, number, number?];
 			return make(buffer, byteOffset, 0, length ?? Math.floor((buffer.byteLength - byteOffset) / bpe));
@@ -965,7 +1074,8 @@ function TypedArray<R>(backingFactory: TypedArrayBackingFactory<R>, BYTES_PER_EL
 		if (ArrayBuffer.isView(a))
 			return fromBuffer(a.buffer, a.byteOffset, a.byteLength);
 		return fromArray(typeof (a as any)[Symbol.iterator] === 'function' ? Array.from(a as Iterable<R>) : a as ArrayLike<R>);
-	}, {
+	}
+	return Object.assign(ctor, {
 		BYTES_PER_ELEMENT,
 		from(a: ArrayLike<R>|Iterable<R>, mapfn?: (v: R, k: number) => R, thisArg?: any): TypedArray<R> {
 			if (!mapfn) {
@@ -983,7 +1093,7 @@ function TypedArray<R>(backingFactory: TypedArrayBackingFactory<R>, BYTES_PER_EL
 			return fromArray(items);
 		}
 
-	}) as any as ViewMaker2<TypedArray<R>>;
+	}) as any as TypedArrayConstructor<TypedArray<R>>;
 }
 
 /*
@@ -1022,7 +1132,7 @@ export function UintTypedArray<N extends number>(bits: N, be?: boolean): ViewMak
 	}
 }
 */
-export function BitAdapterTypedArray<D>(adapter: BitAdapter<any, D>, be?: boolean): ViewMaker2<TypedArray<D>> {
+export function BitAdapterTypedArray<D>(adapter: BitAdapter<any, D>, be?: boolean): TypedArrayConstructor<TypedArray<D>> {
 	const bits	= adapter.bits;
 	if ((bits & 7) === 0) {
 		const bytes	= (bits + 7) >> 3;
@@ -1058,41 +1168,17 @@ export function BitAdapterTypedArray<D>(adapter: BitAdapter<any, D>, be?: boolea
 }
 
 export function UintTypedArray<N extends number>(bits: N, be?: boolean) {
-	let to		= (x: any) => x;
-	let from	= (x: any) => x;
-	if (bits > 32 && bits <= 52) {
-		to		= (x: bigint) => Number(x);
-		from	= (x: number) => BigInt(x);
-	}
-	return BitAdapterTypedArray({bits, to, from} as BitAdapter<BitInput<N>, BitInput<N>>, be);
+	return BitAdapterTypedArray(BitUnsigned(bits), be);
 }
 
 export function IntTypedArray<N extends number>(bits: N, be?: boolean) {
-	let to;
-	let from = (x: any) => x;
-
-	if (bits > 52) {
-		const m = 1n << BigInt(bits - 1);
-		to = (x: bigint) => (x & (m - 1n)) - (x & m);
-	} else if (bits > 32) {
-		const m = 2 ** (bits - 1);
-		to = (x: number|bigint) => {
-			const y = Number(x);
-			return y >= m ? y - 2 * m : y;
-		};
-		from = (x: number) => BigInt(x);
-	} else {
-		const m = 1 << (bits - 1);
-		to = (x: number) => (x & (m - 1)) - (x & m);
-	}
-
-	return BitAdapterTypedArray({bits, to, from} as unknown as BitAdapter<BitInput<N>, BitInput<N>>, be);
+	return BitAdapterTypedArray(BitSigned(bits), be);
 }
 
 type DataViewType = 'Uint8' | 'Int8' | 'Uint16' | 'Uint32' | 'BigUint64' | 'Int16' | 'Int32' | 'BigInt64' | 'Float32' | 'Float64';
 type DataViewReturnType<T extends DataViewType> = T extends 'BigUint64' ? bigint : T extends 'BigInt64' ? bigint : number;
 
-const typedArrays: Record<DataViewType, ViewMaker2<TypedArray>> = {
+const typedArrays: Record<DataViewType, TypedArrayConstructor<TypedArray>> = {
 	Uint8: 		Uint8Array,
 	Int8: 		Int8Array,
 	Uint16: 	Uint16Array,
@@ -1186,7 +1272,15 @@ export function asF64(arg?: TypedArray, be?: boolean) { return arg && as(arg, 'F
 //	text
 //-----------------------------------------------------------------------------
 
-export type TextEncoding = 'utf8' | 'utf16le' | 'utf16be' | 'utf32le' | 'utf32be';
+export type TextEncoding = 'latin1' | 'utf8' | 'utf16le' | 'utf16be' | 'utf32le' | 'utf32be';
+export const bytesPerCharacter: Record<TextEncoding, number> = {
+	latin1: 1,
+	utf8: 1,
+	utf16le: 2,
+	utf16be: 2,
+	utf32le: 4,
+	utf32be: 4
+};
 
 export function stringCode(s: string) {
 	let r = 0;
@@ -1202,6 +1296,13 @@ export function stringCodeBig(s: string) {
 }
 
 export function encodeText(str: string, encoding: TextEncoding = 'utf8', bom = false): Uint8Array {
+	if (encoding === 'latin1') {
+		const buf = new Uint8Array(str.length);
+		for (let i = 0; i < str.length; i++)
+			buf[i] = str.charCodeAt(i) & 0xFF;
+		return buf;
+	}
+
 	if (bom)
 		str = String.fromCharCode(0xfeff) + str;
 
@@ -1212,7 +1313,7 @@ export function encodeText(str: string, encoding: TextEncoding = 'utf8', bom = f
 		const len	= str.length;
 		const view	= make(len, 'Uint16', encoding === 'utf16be');
 		for (let i = 0; i < len; i++)
-			view[i] = str.codePointAt(i) as number;
+			view[i] = str.charCodeAt(i) as number;
 		return new Uint8Array(view);
 
 	} else {
@@ -1220,14 +1321,14 @@ export function encodeText(str: string, encoding: TextEncoding = 'utf8', bom = f
 		const len	= chars.length;
 		const view	= make(len, 'Uint32', encoding === 'utf32be');
 		for (let i = 0; i < len; i++)
-			view[i] = chars[i];
+			view[i] = chars[i].codePointAt(0) as number;
 		return new Uint8Array(view);
 	}
 }
 
 function textView(buf: TypedArray<number>, encoding: TextEncoding) {
 	return as(buf,
-		encoding === 'utf8' ? 'Uint8' :	encoding === 'utf16le' || encoding === 'utf16be' ? 'Uint16' : 'Uint32',
+		encoding === 'utf8' || encoding === 'latin1' ? 'Uint8' : encoding === 'utf16le' || encoding === 'utf16be' ? 'Uint16' : 'Uint32',
 		encoding === 'utf16be' || encoding === 'utf32be'
 	);
 }
@@ -1260,12 +1361,12 @@ export function decodeTextTo0(buf: TypedArray<number> | undefined, encoding: Tex
 		: _decodeText(sub);
 }
 
-const boms: Record<TextEncoding, number[]> = {
+const boms: Partial<Record<TextEncoding, number[]>> = {
 	utf8: [0xEF, 0xBB, 0xBF],
 	utf16le: [0xFF, 0xFE],
 	utf16be: [0xFE, 0xFF],
 	utf32le: [0xFF, 0xFE, 0x00, 0x00],
-	utf32be: [0x00, 0x00, 0xFF, 0xFE]
+	utf32be: [0x00, 0x00, 0xFF, 0xFE],
 };
 const enc_masks: (TextEncoding | '')[] = [
 	'',			//0000
@@ -1288,7 +1389,7 @@ const enc_masks: (TextEncoding | '')[] = [
 
 export function getTextEncoding(bytes: ArrayLike<number>): TextEncoding {
 	for (const i in boms) {
-		const bom = boms[i as TextEncoding];
+		const bom = boms[i as TextEncoding]!;
 		if (bytes.length >= bom.length && bom.every((b, j) => bytes[j] === b))
 			return i as TextEncoding;
 	}

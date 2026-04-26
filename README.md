@@ -122,8 +122,8 @@ enum FileType { Text = 1, Binary = 2, Compressed = 3 }
 enum Permissions { Read = 1, Write = 2, Execute = 4 }
 
 const FileInfo = {
-    type:  bin.asEnum(bin.UINT8, FileType),
-    perms: bin.asFlags(bin.UINT8, Permissions)
+    type:  bin.as(bin.UINT8, bin.EnumString( FileType)),
+    perms: bin.as(bin.UINT8, bin.Flags(Permissions))
 };
 
 const info = bin.read(stream, FileInfo);
@@ -277,16 +277,17 @@ const RGB = bin.as(
 - `asHex(type)`: Display as hex string
 - `asInt(type, radix?)`: Parse string as integer
 - `asFixed(type, fracbits)`: Fixed-point decimal
-- `asEnum(type, enum)`: Map to enum value
-- `asFlags(type, enum, noFalse?)`: Decode bitmask to flags object
+- `as(type, Enum(enum)`: Map to enum (has `toString`)
+- `as(type, EnumString(enum)`: Map to enum string
+- `as(type, Flags(enum, noFalse?))`: Decode bitmask to flags object
 
-**Enum & Flags:**
+**EnumString & Flags:**
 ```typescript
 enum Status { Idle = 0, Running = 1, Stopped = 2 }
-const status = bin.asEnum(bin.UINT8, Status);
+const status = bin.as(bin.UINT8, bin.EnumString( Status);
 
 enum Flags { Read = 1, Write = 2, Execute = 4 }
-const perms = bin.asFlags(bin.UINT8, Flags);  // => {Read: true, Write: false, Execute: true}
+const perms = bin.as(bin.UINT8, bin.Flags(Flags));  // => {Read: true, Write: false, Execute: true}
 ```
 
 **BitFields:**

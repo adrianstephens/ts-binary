@@ -454,12 +454,12 @@ test('Const: constant value', () => {
 
 
 //=============================================================================
-// Enum and Flags
+// EnumString and Flags
 //=============================================================================
 
-test('Enum: convert value to name', () => {
+test('EnumString: convert value to name', () => {
 	enum Color { Red = 0, Green = 1, Blue = 2 }
-	const colorEnum = bin.Enum(Color);
+	const colorEnum = bin.EnumString(Color);
 	assert.equal(colorEnum.to(Color.Red), 'Red');
 	assert.equal(colorEnum.to(Color.Blue), 'Blue');
 });

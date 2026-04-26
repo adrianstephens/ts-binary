@@ -1,5 +1,6 @@
 export * from './sync';
 export * from './types';
+export * from './common';
 export { BitField } from './utils';
 export * as async from './async';
 export * as utils from './utils';
@@ -42,7 +43,7 @@ export class hex<T extends number | bigint> {
 };
 
 export function asHex(type: interop.TypeT<number> | interop.TypeT<bigint> | interop.TypeT<number|bigint>): interop.TypeT<hex<number|bigint>> {
-	return as(type as any, hex as any) as interop.TypeT<hex<number|bigint>>;
+	return as(type, hex);// as interop.TypeT<hex<number|bigint>>;
 }
 
 //-----------------------------------------------------------------------------
@@ -73,14 +74,16 @@ export function asScaled<T extends number|bigint>(type: interop.TypeT<T>, scale:
 					const a		= x < 0n ? -x : x;
 					const sfrac = Number(a % scale) / Number(scale);
 					return `${x < 0n ? '-' : ''}${a / scale}${(digits ? sfrac.toFixed(digits) : sfrac.toString()).slice(1)}`;
-				}
+				},
+				[Symbol.for('debug.description')]: () => (Number(x) / Number(scale)).toString(),
 			};
 		});
 	}
 	return as(type, x => ({
 		x,
 		valueOf: () => x / scale,
-		toString: () => digits ? (x / scale).toFixed(digits) : (x / scale).toString()
+		toString: () => digits ? (x / scale).toFixed(digits) : (x / scale).toString(),
+		[Symbol.for('debug.description')]: () => (x / scale).toString(),
 	}));
 }
 
@@ -92,12 +95,15 @@ export interface TSEnum {
 	[key: string]:	string | number;
 	[value: number]: string;
 };
+type EnumType = TSEnum|Record<string, number|bigint>;
+type EnumValue<E extends EnumType> = Extract<E[keyof E], number | bigint>;
 
-export function EnumV<V extends number|bigint, T extends TSEnum|Record<string, V>>(_: T) {
-	return (x: V) => x as T[keyof T] & V;
+export function EnumV<T extends EnumType>(_: T) {
+	return (x: EnumValue<T>) => x as T[keyof T];// & EnumValue<T>;
 }
 
-export function Enum<V extends number|bigint, E extends TSEnum|Record<string, V>>(e: E) {
+export function EnumString<E extends EnumType>(e: E) {
+	type V = EnumValue<E>;
 	const e1 = (Object.entries(e).filter(([, v]) => typeof v === 'number') as [string, number][]).sort(([, v1], [, v2]) => v2 - v1);
 	const e2 = Object.fromEntries(e1.map(([k, v]) => [v, k]));
 	const e0 = Object.fromEntries(e1);
@@ -128,13 +134,13 @@ export function Enum<V extends number|bigint, E extends TSEnum|Record<string, V>
 			results.push(x.toString());
 		return results.join('+');
 	}
-	
+
 	return {
 		to(x: V) {
-			return e2[Number(x)] ?? split_enum(x);
+			return e2[Number(x)] as keyof E ?? split_enum(x);
 		},
-		from(x: string) {
-			const parts = x.split('+');
+		from(x: keyof E) {
+			const parts = (x as string).split('+');
 			let value: number | bigint = 0;
 			for (const part of parts) {
 				const [k, n] = part.split('*');
@@ -154,39 +160,44 @@ export function Enum<V extends number|bigint, E extends TSEnum|Record<string, V>
 	};
 }
 
-export function asEnum<V extends number|bigint, E extends TSEnum|Record<string, V>>(type: interop.TypeT<V>, e: E): interop.TypeT<string> {
-	return as(type, Enum(e));
+export function Enum<E extends EnumType>(e: E) {
+	const toString = EnumString(e).to;
+	return (v: EnumValue<E>) => ({ valueOf: () => v, toString: () => toString(v) });
 }
-export function asEnum2<V extends number|bigint, E extends TSEnum|Record<string, V>>(type:interop.TypeT<V>, e: E) {
-	const toString = Enum(e).to;
-	return as(type, v => ({ valueOf: () => v, toString: () => toString(v) }));
-}
-
 //-----------------------------------------------------------------------------
 // flags helpers
 //-----------------------------------------------------------------------------
 
-export function Flags<V extends number | bigint>(e: TSEnum|Record<string, V>, noFalse = true) {
+export function FlagsV<T extends Record<string, number>>(_: T) {
+	return (x: number) => x as utils.BitCombinations<T[keyof T]>;
+}
+
+type FlagsObject<E extends EnumType, NoFalse extends boolean = true> = NoFalse extends true
+	? Partial<{ [K in keyof E as utils.IsPow2<E[K]> extends true ? K : never]: true; }> & { [K in keyof E as utils.IsPow2<E[K]> extends false ? K : never]: E[K] extends bigint ? bigint : number; }
+	: { [K in keyof E]: utils.IsPow2<E[K]> extends true ? boolean : E[K] extends bigint ? bigint : number; };
+
+export function Flags<E extends EnumType, NoFalse extends boolean = true>(e: E, noFalse: NoFalse = true as NoFalse) {
+	type V = EnumValue<E>;
 	const e1 = Object.entries(e).filter(([, v]) => typeof v === 'number') as [string, number][];
 
 	return {
-		to(x: number | bigint) {
+		to(x: number | bigint): FlagsObject<E, NoFalse> {
 			return (typeof x === 'bigint'
 			?	e1.reduce((obj, [k, v]) => {
-				const y = x & BigInt(v);
-				if (y || !noFalse)
-					obj[k] = !utils.isPow2(v) ? y / BigInt(utils.lowestSet(v)) : !!y;
-				return obj;
-			}, {} as Record<string, bigint | boolean>)
+					const y = x & BigInt(v);
+					if (y || !noFalse)
+						obj[k] = !utils.isPow2(v) ? y / BigInt(utils.lowestSet(v)) : !!y;
+					return obj;
+				}, {} as Record<string, bigint | boolean>)
 			:	e1.reduce((obj, [k, v]) => {
-				const y = x & v;
-				if (y || !noFalse)
-					obj[k] = !utils.isPow2(v) ? y / utils.lowestSet(v) : !!y;
-				return obj;
-			}, {} as Record<string, number | boolean>)
-			) as Record<string, V | boolean>;
+					const y = x & v;
+					if (y || !noFalse)
+						obj[k] = !utils.isPow2(v) ? y / utils.lowestSet(v) : !!y;
+					return obj;
+				}, {} as Record<string, number | boolean>)
+			) as FlagsObject<E, NoFalse>;
 		},
-		from(x: Record<string, V | boolean>) {
+		from(x: FlagsObject<E, true> | FlagsObject<E, false>) {
 			let value: number | bigint = 0;
 			for (const [k, v] of Object.entries(x)) {
 				const ev = e[k];
@@ -205,10 +216,22 @@ export function Flags<V extends number | bigint>(e: TSEnum|Record<string, V>, no
 		}
 	};
 }
-export function asFlags<V extends number | bigint>(type: interop.TypeT<V>, e: TSEnum|Record<string, V>, noFalse = true) {
+
+/*
+export function asFlags<V extends number | bigint, E extends EnumType>(type: interop.TypeT<V>, e: E, noFalse = true) {
 	return as(type, Flags(e, noFalse));
 }
-export function asFlags2<V extends number | bigint>(type: interop.TypeT<V>, e: TSEnum|Record<string, V>, noFalse = true) {
-	const toString = Flags(e, noFalse).to;
-	return as(type, v => ({ valueOf: () => v, toString: () => toString(v) }));
+export function asFlags2<V extends number | bigint, E extends EnumType>(type: interop.TypeT<V>, e: E, noFalse = true) {
+	const flags = Flags(e, noFalse);
+	return as(type, v => {
+		const wrapper = {
+			valueOf: () => v,
+			test:	(flag: V) => v & flag,
+			all:	(flag: V) => (v & flag) === flag,
+			[Symbol.for('debug.description')]: () => `0x${v.toString(16)}`,
+			[Symbol.for('debug.properties')]: () => flags.to(v)
+		};
+		return wrapper;
+	});
 }
+*/

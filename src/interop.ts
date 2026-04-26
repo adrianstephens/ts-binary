@@ -103,10 +103,16 @@ export function readn<T extends async.TypeReader>(s: async._stream, type: T, n: 
 export function readn<T extends sync.TypeReader|async.TypeReader>(s: sync._stream|async._stream, type: T, n: number) : MaybePromise<ReadType<T>[]>;
 export function readn<T extends sync.TypeReader|async.TypeReader>(s: any, type: T, n: number) : MaybePromise<ReadType<T>[]> {
 	const result: ReadType<T>[] = [];
+	if (!s.obj)
+		s.obj = {};
+	s.obj.array = result;
 	let acc: any = undefined;
 	for (let i = 0; i < n; i++)
 		acc = after(acc, () => after(read(s, type), value => result.push(value)));
-	return after(acc, () => result);
+	return after(acc, () => {
+		delete s.obj.array;
+		return result;
+	});
 }
 
 export function writen(s: sync._stream, type: sync.TypeWriter, v: any): void;
@@ -162,13 +168,13 @@ export function makex<T extends object | number | string | boolean, T2>(type: Ty
 //-----------------------------------------------------------------------------
 
 export interface WithStaticGet {
-	get<X extends abstract new (...args: any) => any>(this: X, s: _stream): Promise<InstanceType<X>>;
+	get<X extends abstract new (...args: any) => any>(this: X, s: _stream): MaybePromise<InstanceType<X>>;
 }
 export interface WithStaticPut {
-	put(s: _stream, v: any): Promise<void>;
+	put(s: _stream, v: any): MaybePromise<void>;
 }
 export interface WithWrite {
-	write(s: _stream): Promise<void>;
+	write(s: _stream): MaybePromise<void>;
 }
 
 export function ReadClass<T extends sync.TypeReader>(spec: T) {
@@ -186,35 +192,40 @@ export function ReadClass<T extends sync.TypeReader>(spec: T) {
 		
 export function Class<T extends sync.Type>(spec: T) {
     return class Class {
-		static async get(s: _stream) {
-			return new this(await read(s, spec));
+		static get(s: _stream) {
+			if (s instanceof sync._stream)
+				return new this(s);
+			return after(read(s, spec), value => new this(value));
 		}
-		static async put(s: _stream, v: Class) {
-			return await write(s, spec, v);
+		static put(s: _stream, v: Class) {
+			return write(s, spec, v);
 		}
 		constructor(s: sync._stream | ReadType<T>) {
 			if (s instanceof sync._stream)
 				s = s.read(spec);
 			return Object.assign(this, s);
 		}
-		async write(s: _stream) {
-			await write(s, spec, this);
+		write(s: _stream) {
+			return write(s, spec, this);
 		}
     } as (new(s: sync._stream | ReadType<T>) => ReadType<T> & WithWrite) & WithStaticGet & WithStaticPut;
 }
 
 export function Extend<B extends (abstract new (...args: any[]) => any) & WithStaticGet & WithStaticPut, T extends sync.Type>(base: B, spec: T) {
 	abstract class Class extends base {
-		static async get(s: _stream): Promise<InstanceType<B> & ReadType<T>> {
-			const b = await base.get(s);
-			b.obj = s.obj;
-			await read(s, spec, b);
-			delete b.obj;
-			return new (this as any)(b);
+		static get(s: _stream): MaybePromise<InstanceType<B> & ReadType<T>> {
+			return after(base.get(s), b => {
+				const bb = b as InstanceType<B> & { obj?: any };
+				bb.obj = s.obj;
+				return after(read(s, spec, b), () => {
+					delete bb.obj;
+					return new (this as any)(b);
+				});
+			});
 		}
-		static async put(s: _stream, v: Class) {
-			await base.put(s, v);
-			await write(s, spec, v);
+
+		static put(s: _stream, v: Class) {
+			return after(base.put(s, v), () => write(s, spec, v));
 		}
 		constructor(...args: any[]) {
 			super(...args);
@@ -226,9 +237,8 @@ export function Extend<B extends (abstract new (...args: any[]) => any) & WithSt
 				delete this.obj;
 			}
 		}
-		async write(s: _stream) 	{
-			await super.write?.(s);
-			await write(s, spec, this);
+		write(s: _stream) 	{
+			return after(super.write?.(s), () => write(s, spec, this));
 		}
 	};
 

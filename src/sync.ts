@@ -171,43 +171,44 @@ type TupleReadType<T extends readonly unknown[]> = T extends readonly [infer Fir
 	: [];
 
 
-type AllCorrelated<T>	= {[K in keyof T]: T[K] extends { get: (...args: any) => infer R } ? (NoPromise<R> extends CorrelatedMerge<infer U> ? U : never) : never}[keyof T];
-type AllMerged<T>		= {[K in keyof T]: T[K] extends { get: (...args: any) => infer R } ? (NoPromise<R> extends MergeType<infer U> ? U : never) : never }[keyof T];
+type StripMerge<T>		= T extends MergeBase<infer U> ? StripMerge<U> : T;
+type MergedInner<T>		= T extends MergeType<infer U> ? U : never;
+type CorrelatedInner<T> = T extends MergeType<infer U> ? CorrelatedInner<U> : T extends CorrelatedMerge<infer U> ? U : never;
+type AllMerged<T>		= Exclude<{ [K in keyof T]: T[K] extends { get: (...args: any) => infer R }	? MergedInner<NoPromise<R>> : never}[keyof T], never>;
+type AllCorrelated<T>	= Exclude<{ [K in keyof T]: T[K] extends { get: (...args: any) => infer R } ? CorrelatedInner<NoPromise<R>> : never}[keyof T], never>;
 
-//type UnionProp<T, K extends PropertyKey> = T extends any ? (K extends keyof T ? T[K] : never) : never;
+type NonMerged<T> = T extends any ? {[K in keyof T as
+	T[K] extends { new (...args: any): any } ? K
+	: T[K] extends { get: (...args: any) => infer R } ? NoPromise<R> extends undefined ? never : NoPromise<R> extends MergeBase<any> ? never : K
+	: K
+]: ReadType<T[K]> } : never;
 
-type FixIntersection3<T, I> = {
-	[K in keyof I]: I[K] extends never ? (T extends any ? (K extends keyof T ? (T[K] extends undefined ? T[K] : Exclude<T[K], undefined>) : I[K]) : I[K]) : I[K];
-//	[K in keyof I]: I[K] extends never ? (UnionProp<T, K> extends undefined ? UnionProp<T, K> : Exclude<UnionProp<T, K>, undefined>) : I[K];
-//	[K in keyof I]: I[K] extends never ? T[K as keyof T] : I[K];
-//	[K in keyof T]: K extends keyof I ? I[K] extends never ? T[K] : I[K] : T[K];
-//	[K in keyof I]: I[K] extends never ? (T & { [P in K]: unknown })[K] : I[K];
-//	[K in keyof I]: I[K] extends never ? UnionProp<T, K> : I[K];
-};
 
-type FixIntersection<T> = FixIntersection3<T, UnionToIntersection<T>>;
+type AllKeys<T> = T extends any ? keyof T : never;
+type FieldType<T, K extends PropertyKey> = T extends any ? K extends keyof T ? T[K] : never : never;
+type OptionalKeys<T> = { [K in AllKeys<T>]: T extends any ? K extends keyof T ? never : K : never }[AllKeys<T>];
+type MergeObject<T> = [T] extends [CorrelatedMerge<any>] ? StripMerge<T>
+	: [T] extends [UnionToIntersection<T>]	? T
+	: { [K in Exclude<AllKeys<T>, OptionalKeys<T>>]: FieldType<T, K> } & { [K in OptionalKeys<T>]?: FieldType<T, K> };
+
+type MergeOverlap<A, B> = [A] extends [never]	? Exclude<B, undefined>
+	: [Exclude<B, undefined>] extends [A]		? Exclude<B, undefined>
+	: [A] extends [Exclude<B, undefined>]		? Exclude<B, undefined>
+	: A | Exclude<B, undefined>;
+
+type MergeResult<A, B> = {[K in keyof A]: K extends keyof B ? MergeOverlap<A[K], B[K]> : A[K]}
+	& {[K in Exclude<keyof B, keyof A> as undefined extends B[K] ? K : never]?: B[K]}
+	& {[K in Exclude<keyof B, keyof A> as undefined extends B[K] ? never : K]: B[K]};
 
 export type ReadType<T> = T extends {new (s: infer _S extends _stream): infer R} ? R
 	: T extends { get: (s: any) => infer R } ? NoPromise<R>
 	: T extends readonly unknown[] ? TupleReadType<T>
 	: T extends object ? (
-		[AllMerged<T>] extends [never] ?
-			{ [K in keyof T as
-				T[K] extends { new (...args: any): any } ? K
-				: T[K] extends { get: (...args: any) => infer R } ? NoPromise<R> extends undefined ? never : NoPromise<R> extends MergeBase<any> ? never : K
-				: K
-			]: ReadType<T[K]> }
-		: FixIntersection<Exclude<		
-			{ [K in keyof T as
-				T[K] extends { new (...args: any): any } ? K
-				: T[K] extends { get: (...args: any) => infer R } ? NoPromise<R> extends undefined ? never : NoPromise<R> extends MergeBase<any> ? never : K
-				: K
-			]: ReadType<T[K]> }
-			| AllMerged<T>,
-			never>>
+		[AllMerged<T>] extends [never]
+			? NonMerged<T>
+			: MergeResult<NonMerged<T>, MergeObject<AllMerged<T>>>
 		) & ([AllCorrelated<T>] extends [never] ? unknown : AllCorrelated<T>)
 	: never;
-
 
 //-----------------------------------------------------------------------------
 // synchronous versions of read/write
@@ -262,8 +263,12 @@ export function write(s: _stream, type: TypeWriter, value: any) : void {
 
 export function readn<T extends TypeReader>(s: _stream, type: T, n: number) : ReadType<T>[] {
 	const result: ReadType<T>[] = [];
+	if (!s.obj)
+		s.obj = {};
+	s.obj.array = result;
 	for (let i = 0; i < n; i++)
 		result.push(read(s, type));
+	delete s.obj.array;
 	return result;
 }
 

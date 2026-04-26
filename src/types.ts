@@ -339,8 +339,8 @@ export const ULEB128: TypeT<number|bigint> = {
 //-----------------------------------------------------------------------------
 
 export function String(len: TypeX<number>, encoding: utils.TextEncoding = 'utf8', zeroTerminated = false, lenScale?: number): TypeT<string> {
-	const rawScale = encoding == 'utf8' ? 1 : 2;
-	const lenScale2 = lenScale ?? rawScale;
+	const rawScale	= utils.bytesPerCharacter[encoding];
+	const lenScale2	= lenScale ?? rawScale;
 	const x = makex(len);
 	return {
 		get: ((s => after(x.get(s),
@@ -381,8 +381,10 @@ function find0(s: _stream|async._stream, view: ViewMaker<TypedArray<number>>) {
 }
 
 export function NullTerminatedString(encoding: utils.TextEncoding = 'utf8'): TypeT<string> {
+	const bpc 		= utils.bytesPerCharacter[encoding];
+	const viewType	= bpc === 1 ? Uint8Array : bpc === 2 ? Uint16Array : Uint32Array;
 	return String(
-		(s, v?: number) => v === undefined ? find0(s, encoding === 'utf8' ? Uint8Array : Uint16Array) : v,
+		(s, v?: number) => v === undefined ? find0(s, viewType) : v,
 		encoding, true, 1
 	);
 };
@@ -441,6 +443,7 @@ export function RemainingArray<T extends Type>(type: T): TypeT<NonNullable<ReadT
 					return asyncPath(value);
 				result.push(value);
 			}
+			delete s.obj.array;
 			return result;
 
 			async function asyncPath(value: Promise<ReadType<T>>): Promise<R[]> {
@@ -454,6 +457,7 @@ export function RemainingArray<T extends Type>(type: T): TypeT<NonNullable<ReadT
 						result.push(value);
 					}
 				}
+				delete s.obj.array;
 				return result;
 			}
 		}) as get<R[]>,
@@ -517,19 +521,26 @@ export const Remainder = RemainingBuffer(Uint8Array);
 //	positional types
 //-----------------------------------------------------------------------------
 
-export function Size<T extends Type>(len: TypeX<number>, type: T): TypeT<ReadType<T>> {
+export function Size<T extends Type>(len: TypeX<number>, type: T, skip0?: false): TypeT<ReadType<T>>;
+export function Size<T extends Type>(len: TypeX<number>, type: T, skip0?: true): TypeT<ReadType<T> | undefined>;
+export function Size<T extends Type>(len: TypeX<number>, type: T, skip0 = false) {
 	const x = makex(len);
 	return {
 		get: (s => after(x.get(s), size => {
-			const start = s.tell();
-			return after(read(s.offsetStream(start, size), type), r => {
-				s.seek(start + size);
-				return r;
-			});
-		})) as get<ReadType<T>>,
+			if (!skip0 || size) {
+				const start = s.tell();
+				return after(read(s.offsetStream(start, size), type), r => {
+					s.seek(start + size);
+					return r;
+				});
+			}
+		})) as get<ReadType<T> | undefined>,
 		put: ((s, v) => {
 			const sizePos = s.tell();
 			return after(x.put(s, 0), () => {
+				if (v === undefined)
+					return undefined;
+
 				const s2 = s.offsetStream(s.tell());
 				return after(write(s2, type, v), () => {
 					const len2 = s2.tell();
@@ -537,7 +548,7 @@ export function Size<T extends Type>(len: TypeX<number>, type: T): TypeT<ReadTyp
 					return after(x.put(s, len2), () => s.skip(len2));
 				});
 			});
-		}) as put<ReadType<T>>
+		}) as put<ReadType<T> | undefined>
 	};
 }
 
@@ -822,7 +833,7 @@ export function If<T extends Type, F extends Type | undefined = undefined>(test:
 					: t && write(s, true_type, v)
 			)
 		) as put<MergeType<R>>
-	};
+	} as TypeT<MergeType<R>>;
 }
 
 
@@ -999,8 +1010,8 @@ export function RemainingRepeat<T extends Type>(type: T, split = (s: any, v: Rea
 //-----------------------------------------------------------------------------
 
 interface adapter0<T, D, O=void> {
-	to(x: T, opt: O): D;
-	from(x: D, opt: O): T;
+	to(x: T, opt: O): MaybePromise<D>;
+	from(x: D, opt: O): MaybePromise<T>;
 }
 type adapter1<T, D, O=void> = (new (x: T, opt: O) => D) | ((x: T, opt: O) => D);
 
@@ -1010,7 +1021,7 @@ function isConstructor<T, D, O>(maker: adapter1<T,D,O>): maker is new (arg: T, o
 	return maker.prototype?.constructor.name;
 }
 //export 
-function make<T, D, O>(maker: adapter<T,D,O>, x: T, opt?: O): D {
+function make<T, D, O>(maker: adapter<T,D,O>, x: T, opt?: O): MaybePromise<D> {
 	return typeof maker === 'function' ? (isConstructor(maker) ? new maker(x, opt as O): maker(x, opt as O)) : maker.to(x, opt as O);
 }
 //export 
