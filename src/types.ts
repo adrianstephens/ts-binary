@@ -1,9 +1,10 @@
 import * as utils from './utils';
 import * as async from './async';
 import * as sync from './sync';
-import { after, tryAfter, MaybePromise, TypedArray, ViewMaker, ViewInstance } from './utils';
-import { _stream, ReadType, MergeType, CorrelatedMerge, isReader, measure } from './sync';
-import { get, put, TypeT, TypeX, Type, read, write, readn, writen,  makex } from './interop';
+import { MaybePromise, ReadType, MergeType, CorrelatedMerge, after, tryAfter } from './common';
+import { TypedArray, ViewMaker, ViewInstance } from './utils';
+import { _stream, measure } from './sync';
+import { get, put, TypeT, TypeX, Type, read, read_merge, write, readn, writen,  makex } from './interop';
 
 //-----------------------------------------------------------------------------
 //	non-reading types (don't need async)
@@ -67,6 +68,7 @@ export function Func(func: (s: any, v?: any)=>any) {
 	};
 }
 
+export function SyncFuncType<T extends sync.Type>(func: (s: _stream, v?: T)=>T): sync.TypeT<ReadType<T>>;
 export function SyncFuncType<T extends sync.Type | undefined>(func: (s: _stream, v?: T)=>T): sync.TypeT<ReadType<T> | undefined> {
 	return {
 		get: s => { const t = func(s); if (t !== undefined) return read(s, t); },
@@ -74,7 +76,9 @@ export function SyncFuncType<T extends sync.Type | undefined>(func: (s: _stream,
 	};
 }
 
+export function FuncType<T extends sync.Type>(func: (s: _stream, v?: T)=>T): sync.TypeT<ReadType<T>>;
 export function FuncType<T extends sync.Type | undefined>(func: (s: _stream, v?: T)=>T): sync.TypeT<ReadType<T> | undefined>;
+export function FuncType<T extends Type>(func: (s: _stream|async._stream, v?: T)=>MaybePromise<T>): TypeT<ReadType<T>>;
 export function FuncType<T extends Type | undefined>(func: (s: _stream|async._stream, v?: T)=>MaybePromise<T>): TypeT<ReadType<T> | undefined>;
 export function FuncType(func: (s: any, v?: any)=>any) {
 	return {
@@ -431,9 +435,8 @@ export function RemainingArray<T extends Type>(type: T): TypeT<NonNullable<ReadT
 	return {
 		get: (s => {
 			const result: R[] = [];
-			if (!s.obj)
-				s.obj = {};
-			s.obj.array = result;
+			(result as any).obj = s.obj;
+			s.obj = result;
 
 			while (s.remaining() !== 0) {
 				const value = read(s, type);
@@ -443,7 +446,8 @@ export function RemainingArray<T extends Type>(type: T): TypeT<NonNullable<ReadT
 					return asyncPath(value);
 				result.push(value);
 			}
-			delete s.obj.array;
+			s.obj = (result as any).obj;
+			delete (result as any).obj;
 			return result;
 
 			async function asyncPath(value: Promise<ReadType<T>>): Promise<R[]> {
@@ -457,7 +461,8 @@ export function RemainingArray<T extends Type>(type: T): TypeT<NonNullable<ReadT
 						result.push(value);
 					}
 				}
-				delete s.obj.array;
+				s.obj = (result as any).obj;
+				delete (result as any).obj;
 				return result;
 			}
 		}) as get<R[]>,
@@ -758,55 +763,7 @@ export function Try<T extends Record<string, Type>>(type: T) {
 		}) as put<R>
 	} as TypeT<R>;
 }
-/*
-export function Maybe<T>(type: TypeT2<T>): TypeT2<T | undefined> {
-	return {
-		get: ((s => {
-			const tell = s.tell();
-			return tryAfter(read2(s, type), result => result, () => {
-				s.seek(tell);
-				return undefined;
-			});
-		}) as get2<T | undefined>),
-		put: ((s, v) => {
-			if (v !== undefined)
-				return type.put(s as any, v);
-		}) as put2<T | undefined>
-	};
-}
-*/
-//function read_merge<T extends TypeReader>(s: _stream, specs: T) {
-//	Object.entries(specs).forEach(([k, v]) => s.obj[k] = isReader(v) ? v.get(s) : read(s, v as TypeReader));
-//}
 
-function read_merge2<T extends Type>(s: _stream|async._stream, specs: T): MaybePromise<void> {
-	if (isReader(specs))
-		return after(specs.get(s as any), value => {
-			Object.assign(s.obj, value);
-		});
-
-	return Object.entries(specs).reduce((acc: any, [k, v]) =>
-		after(acc, () => after(read(s as any, v as any), value => {
-			const current = s.obj[k];
-			if (value && current && typeof value === 'object' && typeof current === 'object' && value.constructor === Object && current.constructor === Object)
-				Object.assign(current, value);
-			else
-				s.obj[k] = value;
-		}))
-	, void 0);
-}
-/*
-function read_merge2<T extends Type2>(s: _stream|async._stream, specs: T): MaybePromise<void> {
-	if (isReader(specs))
-		return after(specs.get(s as any), value => {
-			Object.assign(s.obj, value);
-		});
-
-	return Object.entries(specs).reduce((acc: any, [k, v]) =>
-		after(acc, () => after(read2(s as any, v as any), value => { s.obj[k] = value; }))
-	, void 0);
-}
-*/
 export function Discriminator<K extends string | number, T extends Record<K, any>>(value: any, switches: T): K | undefined {
 	if (typeof value === 'object') {
 		const keys = new Set(Object.keys(value));
@@ -825,7 +782,7 @@ export function If<T extends Type, F extends Type | undefined = undefined>(test:
 	const x = makex(test, discriminator);
 	return {
 		get: (s => after(x.get(s), x => after(
-			false_type ? read_merge2(s, x ? true_type : false_type) : x ? read_merge2(s, true_type) : undefined,
+			false_type ? read_merge(s, x ? true_type : false_type) : x ? read_merge(s, true_type) : undefined,
 			() => ({} as MergeType<R>)
 		))) as get<MergeType<R>>,
 		put: ((s, v) => after(x.put(s, v),
@@ -852,7 +809,7 @@ export function Switch<KName extends string, K extends string | number, T extend
 		return {
 			get: (s => {
 				const t = lookup(s.obj[test]);
-				return t ? read_merge2(s, t) : ({} as CorrelatedMerge<R>);
+				return t ? read_merge(s, t) : ({} as CorrelatedMerge<R>);
 			}) as get<CorrelatedMerge<R>>,
 			put: ((s, _v) => {
 				const t = lookup(s.obj[test]);
@@ -964,7 +921,7 @@ export function Repeat<T extends Type>(len: TypeX<number>, type: T, split = (v: 
 			s.obj = obj;
 			let acc: any = undefined;
 			for (let i = 0; i < n; i++)
-				acc = after(acc, () => read_merge2(s, type));
+				acc = after(acc, () => read_merge(s, type));
 			return after(acc, () => {
 				s.obj = obj0;
 				return obj;
@@ -978,31 +935,31 @@ export function Repeat<T extends Type>(len: TypeX<number>, type: T, split = (v: 
 }
 
 export function RemainingRepeat<T extends Type>(type: T, split = (s: any, v: ReadType<T>) => [v]) {
-	 type R = MergeType<Partial<ReadType<T>>>;
-	 return {
+	type R = MergeType<Partial<ReadType<T>>>;
+	return {
 		get: (s => {
-		 const obj0 = s.obj;
-		 const obj = {} as any;
-		 s.obj = obj;
-		 while (s.remaining() !== 0) {
-			const r = read_merge2(s, type);
-			if (r instanceof Promise)
-			 return asyncPath(r);
-		 }
-		 s.obj = obj0;
-		 return obj;
-
-		 async function asyncPath(first?: Promise<void>) {
-			if (first)
-			 await first;
-			while (s.remaining() !== 0)
-			 await read_merge2(s, type);
+			const obj0 = s.obj;
+			const obj = {} as any;
+			s.obj = obj;
+			while (s.remaining() !== 0) {
+				const r = read_merge(s, type);
+				if (r instanceof Promise)
+					return asyncPath(r);
+			}
 			s.obj = obj0;
 			return obj;
-		 }
+
+			async function asyncPath(first?: Promise<void>) {
+				if (first)
+					await first;
+				while (s.remaining() !== 0)
+					await read_merge(s, type);
+				s.obj = obj0;
+				return obj;
+			}
 		}) as get<R>,
 		put: ((s, v) => writen(s, type, split(s, v as ReadType<T>))) as put<R>
-	 };
+	};
 }
 
 //-----------------------------------------------------------------------------
@@ -1039,9 +996,9 @@ export function as<D>(type: Type, maker: adapter<any, D, _stream|async._stream>,
 		put: ((s, v) => write(s, type, unmake(maker, v, from, s))) as put<D>
 	};
 }
-
+/*
 export function BitFields<D>(bitfields: utils.BitAdapter<any, D>, be?: boolean) : TypeT<D>;
-export function BitFields<T extends Record<string, utils.BitAdapterN<any, any> | number>>(bitfields: T, be?: boolean): TypeT<utils.BitsOutput<T>>;
+export function BitFields<T extends Record<string, utils.BitAdapterN<any, any> | number>>(bitfields: T, be?: boolean): TypeT<utils.BitOutput<T>>;
 export function BitFields(bitfields: any, be?: boolean): TypeT<any> {
 	be = be ?? false;
 	if (typeof bitfields.get !== 'function') {
@@ -1049,4 +1006,10 @@ export function BitFields(bitfields: any, be?: boolean): TypeT<any> {
 		bitfields = utils.BitFields(total, bitfields);
 	}
 	return as(UINT(bitfields.bits, be), bitfields);
+}
+*/
+
+export function BitFields<T extends utils.BitFieldDescriptor>(bitfields: T, be?: boolean) {
+	const bitfields2 = utils.BitFields(0, bitfields);
+	return as(UINT(bitfields2.bits, be), bitfields2);
 }

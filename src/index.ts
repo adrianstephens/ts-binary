@@ -9,7 +9,7 @@ export { ReadClass, Class, Extend } from './interop';
 export * as bit from './bit';
 
 import * as utils from './utils';
-import { ReadType } from './sync';
+import { ReadType } from './common';
 import { as } from './types';
 import * as interop from './interop';
 
@@ -98,8 +98,12 @@ export interface TSEnum {
 type EnumType = TSEnum|Record<string, number|bigint>;
 type EnumValue<E extends EnumType> = Extract<E[keyof E], number | bigint>;
 
-export function EnumV<T extends EnumType>(_: T) {
-	return (x: EnumValue<T>) => x as T[keyof T];// & EnumValue<T>;
+export function EnumV<E extends EnumType>(_: E) {
+	return {
+		to:		(x: EnumValue<E>)	=> x as E[keyof E],
+		from:	(x: E[keyof E])		=> x as number,
+	};
+//	return (x: EnumValue<T>) => x as T[keyof T];// & EnumValue<T>;
 }
 
 export function EnumString<E extends EnumType>(e: E) {

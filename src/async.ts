@@ -1,5 +1,5 @@
-import type { ReadType } from './sync';
-import { after, MaybePromise, ViewMaker, ViewInstance, TypedArray, TypedArrayLike } from './utils';
+import { MaybePromise, ReadType, after, merge } from './common';
+import { ViewMaker, ViewInstance, TypedArray, TypedArrayLike } from './utils';
 
 //-----------------------------------------------------------------------------
 //	stream
@@ -94,7 +94,15 @@ export class _stream {
 	async peek(len: number) {
 		return this.view_at(Uint8Array, this.tell(), len);
 	}
-	read<T extends TypeReader>(spec: T) { return read(this, spec); }
+	read<T extends TypeReader>(spec: T): ReadType<T>;
+	read<T extends TypeReader, U extends object>(spec: T, obj: U) : ReadType<T> & U;
+	read<T extends TypeReader>(spec: T, obj?: any) {
+		if (obj) {
+			this.obj = obj;
+			return read_merge(this, spec).then(() => obj);
+		}
+		return read(this, spec);
+	}
 	write<T extends TypeWriter>(type: T, value: ReadType<T>) { return write(this, type, value); }
 }
 
@@ -241,9 +249,6 @@ export type Type 		= TypeT<any> | { [key: string]: Type; } | readonly TypeT<any>
 // asynchronous versions of read/write
 //-----------------------------------------------------------------------------
 
-//export type TypeX0<T>	= ((s: _stream, value?: T)=>MaybePromise<T>) | T
-//export type TypeX<T>	= TypeT<T> | TypeX0<T>;
-
 function isReader(type: any): type is TypeReaderT<any> {
 	return typeof type.get === 'function';
 }
@@ -251,21 +256,36 @@ function isWriter(type: any): type is TypeWriterT<any> {
 	return typeof type.put === 'function';
 }
 
-export async function read<T extends TypeReader>(s: _stream, spec: T, obj?: any) : Promise<ReadType<T>> {
+export async function read<T extends TypeReader>(s: _stream, spec: T) : Promise<ReadType<T>> {
 	if (isReader(spec))
 		return spec.get(s);
 
-	if (!obj)
-		obj = {obj: s.obj} as any;
+	const obj = {obj: s.obj} as any;
 	s.obj	= obj;
 
 	await Object.entries(spec).reduce((acc: any, [k, t]) => 
-		acc.then(() => read(s, t).then(value => obj[k] = value))
-	, Promise.resolve());
+		acc.then(() => read(s, t).then(value => obj[k] = value)),
+		Promise.resolve()
+	);
 
 	s.obj	= obj.obj;
 	delete obj.obj;
 	return obj;
+}
+
+async function read_merge<T extends TypeReader>(s: _stream, specs: T): Promise<void> {
+	if (isReader(specs)) {
+		const value = await specs.get(s);
+		Object.assign(s.obj, value);
+		if (value?.constructor)
+			Object.setPrototypeOf(s.obj, value.constructor.prototype);
+
+	} else {
+		await Object.entries(specs).reduce((acc: any, [k, t]) =>
+			acc.then(() => read(s, t).then(value => merge(s.obj, k, value))),
+			Promise.resolve()
+		);
+	}
 }
 
 export async function write(s: _stream, type: TypeWriter, value: any) : Promise<void> {
@@ -288,17 +308,6 @@ export async function write(s: _stream, type: TypeWriter, value: any) : Promise<
 		delete value.obj;
 	}
 }
-
-//export async function readx<T extends object | number | string | boolean>(s: _stream, type: TypeX<T>): Promise<T> {
-//	return typeof type === 'function'	? type(s)
-//		:	isReader(type)				? type.get(s)
-//		:	type;
-//}
-//export async function writex<T extends object | number | string>(s: _stream, type: TypeX<T>, value: T): Promise<T> {
-//	return typeof type === 'function'	? type(s, value)
-//		:	isWriter(type)				? after(type.put(s, value), () => value)
-//		:	type;
-//}
 
 //-----------------------------------------------------------------------------
 //	Class

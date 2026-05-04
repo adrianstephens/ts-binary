@@ -188,7 +188,7 @@ test('NullTerminatedStringType: read and write', () => {
 
 test('StringType with length prefix', () => {
 	const s = new bin.growingStream();
-	const strType = bin.StringType(bin.UINT8, 'utf8', false);
+	const strType = bin.String(bin.UINT8, 'utf8', false);
 	bin.write(s, strType, 'Hi');
 	const data = s.terminate();
 	const s2 = new bin.stream(data);
@@ -199,13 +199,13 @@ test('StringType with length prefix', () => {
 test('RemainingStringType: roundtrip', () => {
 	const s = new bin.growingStream();
 	bin.write(s, bin.UINT8, 42);
-	bin.write(s, bin.RemainingStringType('utf8'), 'World');
+	bin.write(s, bin.RemainingString('utf8'), 'World');
 	const data = s.terminate();
 	console.log('RemainingStringType data:', data);
 	const s2 = new bin.stream(data);
 	const val1 = bin.read(s2, bin.UINT8);
 	console.log('Read UINT8:', val1);
-	const val = bin.read(s2, bin.RemainingStringType('utf8'));
+	const val = bin.read(s2, bin.RemainingString('utf8'));
 	console.log('RemainingStringType read back:', val);
 	assert.equal(val, 'World');
 });
@@ -482,6 +482,13 @@ test('BitFields: extract bit ranges', () => {
 	const result = bitFields.to(0xAB);
 	assert.equal(result.a, 0xB);
 	assert.equal(result.b, 0xA);
+});
+
+test('BitFields: tuple descriptor support', () => {
+	const bitFields = bin.utils.BitFields(0, [4, 4] as const);
+	const result = bitFields.to(0xAB);
+	assert.equal(result[0], 0xB);
+	assert.equal(result[1], 0xA);
 });
 
 //=============================================================================

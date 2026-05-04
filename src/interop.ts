@@ -1,5 +1,4 @@
-import { after, MaybePromise } from './utils';
-import { ReadType } from './sync';
+import { ReadType, MaybePromise, after, merge } from './common';
 import * as sync from './sync';
 import * as async from './async';
 
@@ -77,6 +76,19 @@ export function read<T extends sync.TypeReader|async.TypeReader>(s: any, spec: T
 	});
 }
 
+export function read_merge<T extends Type>(s: _stream|async._stream, specs: T): MaybePromise<void> {
+	if (isReader(specs))
+		return after(specs.get(s as any), value => {
+			Object.assign(s.obj, value);
+			if (value?.constructor)
+				Object.setPrototypeOf(s.obj, value.constructor.prototype);
+		});
+
+	return Object.entries(specs).reduce((acc: any, [k, v]) =>
+		after(acc, () => after(read(s as any, v as any), value => merge(s.obj, k, value)))
+	, void 0);
+}
+
 export function write(s: sync._stream, type: sync.TypeWriter, value: any) : void;
 export function write(s: async._stream, type: async.TypeWriter, value: any) : Promise<void>;
 export function write(s: sync._stream|async._stream, type: sync.TypeWriter|async.TypeWriter, value: any) : MaybePromise<void>;
@@ -103,14 +115,14 @@ export function readn<T extends async.TypeReader>(s: async._stream, type: T, n: 
 export function readn<T extends sync.TypeReader|async.TypeReader>(s: sync._stream|async._stream, type: T, n: number) : MaybePromise<ReadType<T>[]>;
 export function readn<T extends sync.TypeReader|async.TypeReader>(s: any, type: T, n: number) : MaybePromise<ReadType<T>[]> {
 	const result: ReadType<T>[] = [];
-	if (!s.obj)
-		s.obj = {};
-	s.obj.array = result;
+	(result as any).obj = s.obj;
+	s.obj = result;
 	let acc: any = undefined;
 	for (let i = 0; i < n; i++)
 		acc = after(acc, () => after(read(s, type), value => result.push(value)));
 	return after(acc, () => {
-		delete s.obj.array;
+		s.obj = (result as any).obj;
+		delete (result as any).obj;
 		return result;
 	});
 }
@@ -148,12 +160,14 @@ export function makex<T extends object | number | string | boolean, T2>(type: Ty
 	if (isReader(type))
 		return {
 			get: (s: any) => type.get(s),
-			put: !isWriter(type) || !discriminator
+			put: !isWriter(type)
 				? (_s: any, v: T) => v
+				: !discriminator
+				? (s: any, v: T) => after(type.put(s, v), () => v)
 				: (s: any, v: T2) => {
 					const t = discriminator(v);
 					if (t !== undefined)
-						return after(type.put(s as any, t), () => v);
+						return after(type.put(s, t), () => v);
 				}
 		};
 

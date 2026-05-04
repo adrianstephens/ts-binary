@@ -1,7 +1,10 @@
 import eslint from "@eslint/js";
 import tslint from "typescript-eslint";
+import { dirname } from 'path';
+import { fileURLToPath } from 'url';
 async function maybeImport(modulePath) { try { return await import(modulePath); } catch { return undefined; } }
 let customPlugin = await maybeImport('../eslint-custom.mjs');
+
 // @ts-check
 
 export default tslint.config(
@@ -10,6 +13,7 @@ export default tslint.config(
 	...tslint.configs.stylistic,
 	...(customPlugin ? [customPlugin.config] : []),
 	{
+		ignorePatterns: ["test/**/*.ts"],
 		rules: {
 			"semi": ["error", "always"],
 			//"@typescript-eslint/no-misleading-character-class": "off",
@@ -32,6 +36,12 @@ export default tslint.config(
 		},
 	},
 	{
-		files: ["src/*.ts"],
+		files: ["**/*.ts"],
+		languageOptions: {
+			parserOptions: {
+				project: ['./tsconfig.json'],
+				tsconfigRootDir: dirname(fileURLToPath(import.meta.url))
+			}
+		}
 	}
 );

@@ -2,9 +2,8 @@ import * as async from './async';
 import * as sync from './sync';
 import * as interop from './interop';
 import * as utils from './utils';
-import { after, BitsType, MaybePromise, TypedArrayLike, ViewMaker } from './utils';
-
-type ReadType<T> = sync.ReadType<T>;
+import { MaybePromise, ReadType, after } from './common';
+import { BitsType, TypedArrayLike, ViewMaker } from './utils';
 
 //-----------------------------------------------------------------------------
 //	stream

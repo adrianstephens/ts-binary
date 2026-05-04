@@ -1,4 +1,5 @@
-import { TypedArray, ViewMaker, ViewInstance, NoPromise, UnionToIntersection } from './utils';
+import { ReadType, merge } from './common';
+import { TypedArray, ViewMaker, ViewInstance } from './utils';
 
 //-----------------------------------------------------------------------------
 //	stream
@@ -87,8 +88,17 @@ export class _stream {
 	peek(len: number) {
 		return this.view_at(Uint8Array, this.tell(), len);
 	}
-	read<T extends TypeReader>(spec: T, obj?: any) { return read(this, spec, obj); }
-	write<T extends TypeWriter>(type: T, value: ReadType<T>) { return write(this, type, value); }
+	read<T extends TypeReader, U extends object>(spec: T, obj: U): ReadType<T> & U;
+	read<T extends TypeReader>(spec: T): ReadType<T>;
+	read<T extends TypeReader>(spec: T, obj?: any) {
+		if (obj) {
+			this.obj = obj;
+			read_merge(this, spec);
+			return obj;
+		}
+		return read(this, spec);
+	}
+	write<T extends TypeWriter>(type: T, value: ReadType<T>)	{ return write(this, type, value); }
 
 	[Symbol.dispose]() {
 		const atend = this.atend;
@@ -151,8 +161,8 @@ export function measure<T extends Type>(type: T, data?: ReadType<T>) {
 		dummy.write(type, data);
 	else
 		dummy.read(type);
-		return dummy.tell();
-	}
+	return dummy.tell();
+}
 
 export interface TypeReaderT<T> { get(s: _stream): T }
 export interface TypeWriterT<T> { put(s: _stream, v: T): void }
@@ -162,60 +172,9 @@ export type TypeReader	= TypeReaderT<any> | { [key: string]: TypeReader; } | rea
 export type TypeWriter	= TypeWriterT<any> | { [key: string]: TypeWriter; } | readonly TypeWriterT<any>[]
 export type Type 		= TypeT<any> | { [key: string]: Type; } | readonly TypeT<any>[]
 
-export interface MergeBase<T> { merge: T; }
-export interface MergeType<T> extends MergeBase<T> { readonly correlated: false; }
-export interface CorrelatedMerge<T> extends MergeBase<T> { readonly correlated: true; }
-
-type TupleReadType<T extends readonly unknown[]> = T extends readonly [infer First, ...infer Rest]
-	? [ReadType<First>, ...TupleReadType<Rest>]
-	: [];
-
-
-type StripMerge<T>		= T extends MergeBase<infer U> ? StripMerge<U> : T;
-type MergedInner<T>		= T extends MergeType<infer U> ? U : never;
-type CorrelatedInner<T> = T extends MergeType<infer U> ? CorrelatedInner<U> : T extends CorrelatedMerge<infer U> ? U : never;
-type AllMerged<T>		= Exclude<{ [K in keyof T]: T[K] extends { get: (...args: any) => infer R }	? MergedInner<NoPromise<R>> : never}[keyof T], never>;
-type AllCorrelated<T>	= Exclude<{ [K in keyof T]: T[K] extends { get: (...args: any) => infer R } ? CorrelatedInner<NoPromise<R>> : never}[keyof T], never>;
-
-type NonMerged<T> = T extends any ? {[K in keyof T as
-	T[K] extends { new (...args: any): any } ? K
-	: T[K] extends { get: (...args: any) => infer R } ? NoPromise<R> extends undefined ? never : NoPromise<R> extends MergeBase<any> ? never : K
-	: K
-]: ReadType<T[K]> } : never;
-
-
-type AllKeys<T> = T extends any ? keyof T : never;
-type FieldType<T, K extends PropertyKey> = T extends any ? K extends keyof T ? T[K] : never : never;
-type OptionalKeys<T> = { [K in AllKeys<T>]: T extends any ? K extends keyof T ? never : K : never }[AllKeys<T>];
-type MergeObject<T> = [T] extends [CorrelatedMerge<any>] ? StripMerge<T>
-	: [T] extends [UnionToIntersection<T>]	? T
-	: { [K in Exclude<AllKeys<T>, OptionalKeys<T>>]: FieldType<T, K> } & { [K in OptionalKeys<T>]?: FieldType<T, K> };
-
-type MergeOverlap<A, B> = [A] extends [never]	? Exclude<B, undefined>
-	: [Exclude<B, undefined>] extends [A]		? Exclude<B, undefined>
-	: [A] extends [Exclude<B, undefined>]		? Exclude<B, undefined>
-	: A | Exclude<B, undefined>;
-
-type MergeResult<A, B> = {[K in keyof A]: K extends keyof B ? MergeOverlap<A[K], B[K]> : A[K]}
-	& {[K in Exclude<keyof B, keyof A> as undefined extends B[K] ? K : never]?: B[K]}
-	& {[K in Exclude<keyof B, keyof A> as undefined extends B[K] ? never : K]: B[K]};
-
-export type ReadType<T> = T extends {new (s: infer _S extends _stream): infer R} ? R
-	: T extends { get: (s: any) => infer R } ? NoPromise<R>
-	: T extends readonly unknown[] ? TupleReadType<T>
-	: T extends object ? (
-		[AllMerged<T>] extends [never]
-			? NonMerged<T>
-			: MergeResult<NonMerged<T>, MergeObject<AllMerged<T>>>
-		) & ([AllCorrelated<T>] extends [never] ? unknown : AllCorrelated<T>)
-	: never;
-
 //-----------------------------------------------------------------------------
 // synchronous versions of read/write
 //-----------------------------------------------------------------------------
-
-//export type TypeX0<T>	= string | ((s: _stream, value?: T)=>T) | T
-//export type TypeX<T>	= TypeT<T> | TypeX0<T>;
 
 export function isReader(type: any): type is TypeReaderT<any> {
 	return typeof type.get === 'function';
@@ -224,12 +183,11 @@ export function isWriter(type: any): type is TypeWriterT<any> {
 	return typeof type.put === 'function';
 }
 
-export function read<T extends TypeReader>(s: _stream, spec: T, obj?: any) : ReadType<T> {
+export function read<T extends TypeReader>(s: _stream, spec: T) : ReadType<T> {
 	if (isReader(spec))
 		return spec.get(s);
 
-	if (!obj)
-		obj = {obj: s.obj} as any;
+	const	obj = {obj: s.obj} as any;
 	s.obj	= obj;
 	Object.entries(spec).forEach(([k, t]) => obj[k] = read(s, t));
 	s.obj	= obj.obj;
@@ -237,10 +195,17 @@ export function read<T extends TypeReader>(s: _stream, spec: T, obj?: any) : Rea
 	return obj;
 }
 
-export function read_more<T extends TypeReader, O extends Record<string, any>>(s: _stream, specs: T, obj: O) : ReadType<T> & O {
-	s.obj = obj;
-	Object.entries(specs).forEach(([k, v]) => s.obj[k] = isReader(v) ? v.get(s) : read_more(s, v as TypeReader, s.obj[k]));
-	return s.obj;
+function read_merge<T extends TypeReader>(s: _stream, specs: T) {
+	if (isReader(specs)) {
+		const value = specs.get(s);
+		Object.assign(s.obj, value);
+		if (value?.constructor)
+			Object.setPrototypeOf(s.obj, value.constructor.prototype);
+
+	} else {
+		for (const [k, v] of Object.entries(specs))
+			merge(s.obj, k, read(s, v));
+	}
 }
 
 export function write(s: _stream, type: TypeWriter, value: any) : void {
@@ -263,12 +228,12 @@ export function write(s: _stream, type: TypeWriter, value: any) : void {
 
 export function readn<T extends TypeReader>(s: _stream, type: T, n: number) : ReadType<T>[] {
 	const result: ReadType<T>[] = [];
-	if (!s.obj)
-		s.obj = {};
-	s.obj.array = result;
+	(result as any).obj = s.obj;
+	s.obj = result;
 	for (let i = 0; i < n; i++)
 		result.push(read(s, type));
-	delete s.obj.array;
+	s.obj = (result as any).obj;
+	delete (result as any).obj;
 	return result;
 }
 
@@ -276,23 +241,6 @@ export function writen(s: _stream, type: any, v: any) {
 	for (const i of v)
 		write(s, type, i);
 }
-
-//export function readx<T extends object | number | string | boolean>(s: _stream, type: TypeX<T>) {
-//	return isReader(type)				? type.get(s)
-//		:	getx(s, type);
-//}
-//export function writex<T extends object | number | string>(s: _stream, type: TypeX<T>, value: T) {
-//	return isWriter(type)				? (type.put(s, value), value)
-//		:	typeof type === 'function'	? type(s, value)
-//		:	getx(s, type);
-//}
-//
-//export function getx<T extends object | number | string | boolean>(s: any, type: TypeX0<T>): T {
-//	return typeof type === 'function'	? type(s)
-//		:	typeof type === 'string'	? s.obj[type]
-//		:	type;
-//}
-
 
 //-----------------------------------------------------------------------------
 //	Class

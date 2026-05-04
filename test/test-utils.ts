@@ -61,7 +61,7 @@ for (const i of b3)
 	console.log(i);
 
 
-const Float16Array = utils.BitAdapterTypedArray(utils.float16);
+const Float16Array = utils.BitFieldsTypedArray(utils.float16);
 const f16 = new Float16Array(new ArrayBuffer(64), 0, 32);
 for (let i = 0; i < 32; i++)
 	f16[i] = utils.float16(i / 10);
@@ -70,7 +70,7 @@ for (const i of f16)
 	console.log(+i);
 
 
-const StructArray = utils.BitAdapterTypedArray(utils.BitFields(0, {a:1, b:2, c:3} as const));
+const StructArray = utils.BitFieldsTypedArray(utils.BitFields(0, {a:1, b:2, c:3} as const));
 const sa = new StructArray(new ArrayBuffer(64), 0, 32);
 for (let i = 0; i < 32; i++)
 	sa[i] = {a: i & 1, b: (i >> 1) & 3, c: (i >> 3) & 7};
