@@ -1,10 +1,12 @@
-import * as utils from './utils';
+import * as text from './utilities/text';
+import {Float as float} from './utilities/float';
 import * as async from './async';
 import * as sync from './sync';
-import { MaybePromise, ReadType, MergeType, CorrelatedMerge, after, tryAfter } from './common';
-import { TypedArray, ViewMaker, ViewInstance } from './utils';
+import { UnionToIntersection, MaybePromise, ReadType, MergeType, CorrelatedMerge, after, tryAfter, merge, highestSetIndex, toSigned, toSignedBig, KMP } from './common';
+import { TypedArray, ViewMaker, ViewInstance, getUint, putUint, getBigUint, putBigUint, getBigUintBits, putBigUintBits } from './utilities/typedArray';
+import { BitFieldDescriptor, BitFields as BitFields0 } from './utilities/bitfields';
 import { _stream, measure } from './sync';
-import { get, put, TypeT, TypeX, Type, read, read_merge, write, readn, writen,  makex } from './interop';
+import { get, put, TypeT, TypeX, Type, read, read_merge, readn, write, write_merge, writen, makex, isReader } from './interop';
 
 //-----------------------------------------------------------------------------
 //	non-reading types (don't need async)
@@ -48,7 +50,7 @@ export function DontRead<T>(): TypeT0<T|undefined> {
 export function Const<T>(t: T): TypeT0<T> {
 	return {
 		get: _s => t,
-		put: (_s, _v) => undefined
+		put: _s => undefined
 	};
 }
 
@@ -94,9 +96,12 @@ export function Discard(type: Type): TypeT<undefined> {
 }
 
 export function Expect<T extends Type>(type: T, t: ReadType<T>): TypeT<undefined> {
+	const compare: (x: ReadType<T>) => boolean = typeof t !== 'object'
+		? x => x === t
+		: x => JSON.stringify(x) === JSON.stringify(t);
 	return {
 		get: (s => after(read(s, type), x => {
-			if (x !== t)
+			if (!compare(x))
 				throw new Error(`Expected ${t}, got ${x}`);
 			return undefined;
 		})) as get<undefined>,
@@ -120,12 +125,6 @@ export function ReadOnly<T extends Type>(spec: T): TypeT<ReadType<T>> {
 //-----------------------------------------------------------------------------
 //	numeric types
 //-----------------------------------------------------------------------------
-
-//type TypeNumber<T extends number> = T extends 8 | 16 | 24 | 32 | 40 | 48 | 56
-//	? TypeT<number>
-//	: TypeT<bigint>;
-
-//type TypeNumber2<T extends number> = TypeT2<utils.NumericType<T>>;
 
 type TypeNumber2<N extends number> = number extends N ? TypeT<number | bigint>
 	: N extends 8 | 16 | 24 | 32 | 40 | 48 | 56 ? TypeT<number>
@@ -180,12 +179,12 @@ export const UINT32 	= endian_from_stream(_UINT32), INT32 = endian_from_stream(_
 //64 bit
 /* // before BigInt was widely supported
 function _UINT64(be?: boolean): TypeT2<bigint> { return {
-	get: ((s => after(s.view(DataView, 8), dv => utils.getBigUint(dv, 0, 8, !be))) as get2<bigint>),
-	put: ((s, v) => after(s.view(DataView, 8), dv => utils.putBigUint(dv, 0, v, 8, !be))) as put2<bigint>,
+	get: ((s => after(s.view(DataView, 8), dv => getBigUint(dv, 0, 8, !be))) as get2<bigint>),
+	put: ((s, v) => after(s.view(DataView, 8), dv => putBigUint(dv, 0, v, 8, !be))) as put2<bigint>,
 };};
 function _INT64(be?: boolean): TypeT2<bigint> { return {
-	get: ((s => after(s.view(DataView, 8), dv => utils.toSignedBig(utils.getBigUint(dv, 0, 8, !be), 64))) as get2<bigint>),
-	put: ((s, v) => after(s.view(DataView, 8), dv => utils.putBigUint(dv, 0, v, 8, !be))) as put2<bigint>,
+	get: ((s => after(s.view(DataView, 8), dv => toSignedBig(getBigUint(dv, 0, 8, !be), 64))) as get2<bigint>),
+	put: ((s, v) => after(s.view(DataView, 8), dv => putBigUint(dv, 0, v, 8, !be))) as put2<bigint>,
 };};
 */
 function _UINT64(be?: boolean): TypeT<bigint> { return {
@@ -209,13 +208,13 @@ export function UINT<N extends number>(bits: N | TypeX<number>, be?: boolean): T
 		return (bits === 8 ? UINT8
 			: bits > 56
 			? endian((be?: boolean) => ({
-				get: (s => after(s.view(DataView, bits / 8), dv => utils.getBigUint(dv, 0, bits / 8, !be))) as get<bigint>,
-				put: ((s, v) => after(s.view(DataView, bits / 8), dv => utils.putBigUint(dv, 0, v, bits / 8, !be))) as put<bigint>
+				get: (s => after(s.view(DataView, bits / 8), dv => getBigUint(dv, 0, bits / 8, !be))) as get<bigint>,
+				put: ((s, v) => after(s.view(DataView, bits / 8), dv => putBigUint(dv, 0, v, bits / 8, !be))) as put<bigint>
 			}), be)
 			: endian(bits == 16 ? _UINT16 : bits == 32 ? _UINT32 :
 			(be?: boolean) => ({
-				get: (s => after(s.view(DataView, bits / 8), dv => utils.getUint(dv, 0, bits / 8, !be))) as get<number>,
-				put: ((s, v) => after(s.view(DataView, bits / 8), dv => utils.putUint(dv, 0, v, bits / 8, !be))) as put<number>
+				get: (s => after(s.view(DataView, bits / 8), dv => getUint(dv, 0, bits / 8, !be))) as get<number>,
+				put: ((s, v) => after(s.view(DataView, bits / 8), dv => putUint(dv, 0, v, bits / 8, !be))) as put<number>
 			}), be)
 		) as TypeNumber2<N>;
 	} else {
@@ -224,12 +223,12 @@ export function UINT<N extends number>(bits: N | TypeX<number>, be?: boolean): T
 			get: (
 				s		=> after(x.get(s),
 				bits	=> after(s.view(DataView, (bits + 7) >> 3),
-				dv		=> utils.getBigUintBits(dv, 0, bits, !be)
+				dv		=> getBigUintBits(dv, 0, bits, !be)
 			))) as get<number|bigint>,
 			put: (
-				(s, v)	=> after(x.put(s, utils.highestSetIndex(v)),
+				(s, v)	=> after(x.put(s, highestSetIndex(v)),
 				bits	=> after(s.view(DataView, (bits + 7) >> 3),
-				dv		=> utils.putBigUintBits(dv, 0, BigInt(v), bits, !be)
+				dv		=> putBigUintBits(dv, 0, BigInt(v), bits, !be)
 			))) as put<number|bigint>
 		}), be) as TypeNumber2<N>;
 	}
@@ -243,13 +242,13 @@ export function INT<N extends number>(bits: N | TypeX<number>, be?: boolean): Ty
 		return (bits === 8 ? UINT8
 			: bits > 56
 			? endian((be?: boolean) => ({
-				get: (s => after(s.view(DataView, bits / 8), dv => utils.toSignedBig(utils.getBigUint(dv, 0, bits / 8, !be), bits))) as get<bigint>,
-				put: ((s, v) => after(s.view(DataView, bits / 8), dv => utils.putBigUint(dv, 0, v, bits / 8, !be))) as put<bigint>
+				get: (s => after(s.view(DataView, bits / 8), dv => toSignedBig(getBigUint(dv, 0, bits / 8, !be), bits))) as get<bigint>,
+				put: ((s, v) => after(s.view(DataView, bits / 8), dv => putBigUint(dv, 0, v, bits / 8, !be))) as put<bigint>
 			}), be)
 			: endian(bits == 16 ? _INT16 : bits == 32 ? _INT32 :
 			(be?: boolean) => ({
-				get: (s => after(s.view(DataView, bits / 8), dv => utils.toSigned(utils.getUint(dv, 0, bits / 8, !be), bits))) as get<number>,
-				put: ((s, v) => after(s.view(DataView, bits / 8), dv => utils.putUint(dv, 0, v, bits / 8, !be))) as put<number>
+				get: (s => after(s.view(DataView, bits / 8), dv => toSigned(getUint(dv, 0, bits / 8, !be), bits))) as get<number>,
+				put: ((s, v) => after(s.view(DataView, bits / 8), dv => putUint(dv, 0, v, bits / 8, !be))) as put<number>
 			}), be)
 		) as TypeNumber2<N>;
 	} else {
@@ -258,12 +257,12 @@ export function INT<N extends number>(bits: N | TypeX<number>, be?: boolean): Ty
 			get: (
 				s		=> after(x.get(s),
 				bits	=> after(s.view(DataView, (bits + 7) >> 3),
-				dv		=> utils.toSignedBig(utils.getBigUintBits(dv, 0, bits, !be), bits)
+				dv		=> toSignedBig(getBigUintBits(dv, 0, bits, !be), bits)
 			))) as get<number|bigint>,
 			put: (
-				(s, v)	=> after(x.put(s, utils.highestSetIndex(v < 0 ? -v : v)),
+				(s, v)	=> after(x.put(s, highestSetIndex(v < 0 ? -v : v)),
 				bits	=> after(s.view(DataView, (bits + 7) >> 3),
-				dv		=> utils.putBigUintBits(dv, 0, BigInt(v), bits, !be)
+				dv		=> putBigUintBits(dv, 0, BigInt(v), bits, !be)
 			))) as put<number|bigint>
 		}), be) as TypeNumber2<N>;
 	
@@ -287,12 +286,12 @@ export function Float(mbits: number, ebits: number, ebias = (1 << (ebits - 1)) -
 		return endian(_Float64, be);
 	if (sbit && mbits === 23 && ebits === 8 && ebias === 127)
 		return endian(_Float32, be);
-	const F = utils.Float(mbits, ebits, ebias, sbit);
+	const F = float(mbits, ebits, ebias, sbit);
 	return as(UINT(F.bits, be), x => +F.to(x), y => F(y).raw as any);
 }
 
 export function FloatRaw(mbits: number, ebits: number, ebias = (1 << (ebits - 1)) - 1, sbit = true, be?: boolean)	{
-	const F = utils.Float(mbits, ebits, ebias, sbit);
+	const F = float(mbits, ebits, ebias, sbit);
 	return as(UINT(F.bits, be), x => F.to(x), y => F(+y).raw as any);
 }
 export const Float16	= Float(10, 5, 15, true), Float16_LE = Float(10, 5, 15, true, false), Float16_BE = Float(10, 5, 15, true, true);
@@ -308,19 +307,19 @@ export const ULEB128: TypeT<number|bigint> = {
 
 		t |= (b & 0x7f) << (i * 7);
 		if (!(b & 0x80)) {
-			s.skip(i + 1 - 16);
+			s.skip(i + 1 - buffer.length);
 			return t;
 		}
 		let tn = BigInt(t);
 		while ((b = buffer[i]) & 0x80)
 			tn |= BigInt(b & 0x7f) << BigInt(i++ * 7);
 		tn |= BigInt(b) << BigInt(i * 7);
-		s.skip(i + 1 - 16);
+		s.skip(i + 1 - buffer.length);
 		return tn;
 	})) as get<number|bigint>,
 
 	put: ((s, v) => {
-		const buffer = new Uint8Array(Math.floor(utils.highestSetIndex(v) / 7) + 1);
+		const buffer = new Uint8Array(Math.floor(highestSetIndex(v) / 7) + 1);
 		let i = 0;
 		if (typeof v === 'number') {
 			while (v > 127) {
@@ -342,15 +341,15 @@ export const ULEB128: TypeT<number|bigint> = {
 //	string types
 //-----------------------------------------------------------------------------
 
-export function String(len: TypeX<number>, encoding: utils.TextEncoding = 'utf8', zeroTerminated = false, lenScale?: number): TypeT<string> {
-	const rawScale	= utils.bytesPerCharacter[encoding];
+export function String(len: TypeX<number>, encoding: text.Encoding = 'utf8', zeroTerminated = false, lenScale?: number): TypeT<string> {
+	const rawScale	= text.bytesPerCharacter[encoding];
 	const lenScale2	= lenScale ?? rawScale;
 	const x = makex(len);
 	return {
 		get: ((s => after(x.get(s),
 			len2 => after(s.view(Uint8Array, len2 * lenScale2),
 			buff => {
-				const v = utils.decodeText(buff, encoding);
+				const v = text.decode(buff, encoding);
 				const z = zeroTerminated ? v.indexOf('\0') : -1;
 				return z >= 0 ? v.substring(0, z) : v;
 			})
@@ -360,7 +359,7 @@ export function String(len: TypeX<number>, encoding: utils.TextEncoding = 'utf8'
 				v += '\0';
 			return after(x.put(s, v.length * rawScale / lenScale2),
 				len2 => after(s.view(Uint8Array, len2 * lenScale2),
-				buff => buff.set(utils.encodeText(v, encoding))
+				buff => buff.set(text.encode(v, encoding))
 			));
 		}) as put<string>,
 	};
@@ -384,22 +383,22 @@ function find0(s: _stream|async._stream, view: ViewMaker<TypedArray<number>>) {
 	return chunk(0, 16);
 }
 
-export function NullTerminatedString(encoding: utils.TextEncoding = 'utf8'): TypeT<string> {
-	const bpc 		= utils.bytesPerCharacter[encoding];
+export function NullTerminatedString(encoding: text.Encoding = 'utf8'): TypeT<string> {
+	const bpc 		= text.bytesPerCharacter[encoding];
 	const viewType	= bpc === 1 ? Uint8Array : bpc === 2 ? Uint16Array : Uint32Array;
 	return String(
 		(s, v?: number) => v === undefined ? find0(s, viewType) : v,
-		encoding, true, 1
+		encoding, true, bpc
 	);
 };
 
-export function RemainingString(encoding: utils.TextEncoding = 'utf8', zeroTerminated = false): TypeT<string> {
+export function RemainingString(encoding: text.Encoding = 'utf8', zeroTerminated = false): TypeT<string> {
 	return {
-		get: (s => after(s.remainder(), r => utils.decodeText(r, encoding))) as get<string>,
+		get: (s => after(s.remainder(), r => text.decode(r, encoding))) as get<string>,
 		put: ((s, v) => {
 			if (zeroTerminated)
 				v += '\0';
-			const encoded = utils.encodeText(v, encoding);
+			const encoded = text.encode(v, encoding);
 			return after(s.view(Uint8Array, encoded.length), buffer => buffer.set(encoded));
 		}) as put<string>,
 	};
@@ -435,8 +434,7 @@ export function RemainingArray<T extends Type>(type: T): TypeT<NonNullable<ReadT
 	return {
 		get: (s => {
 			const result: R[] = [];
-			(result as any).obj = s.obj;
-			s.obj = result;
+			s.pushObj(result);
 
 			while (s.remaining() !== 0) {
 				const value = read(s, type);
@@ -446,9 +444,7 @@ export function RemainingArray<T extends Type>(type: T): TypeT<NonNullable<ReadT
 					return asyncPath(value);
 				result.push(value);
 			}
-			s.obj = (result as any).obj;
-			delete (result as any).obj;
-			return result;
+			return s.popObj(result);
 
 			async function asyncPath(value: Promise<ReadType<T>>): Promise<R[]> {
 				const value2 = await value;
@@ -461,9 +457,7 @@ export function RemainingArray<T extends Type>(type: T): TypeT<NonNullable<ReadT
 						result.push(value);
 					}
 				}
-				s.obj = (result as any).obj;
-				delete (result as any).obj;
-				return result;
+				return s.popObj(result);
 			}
 		}) as get<R[]>,
 		put: ((s, v) => writen(s, type, v)) as put<R[]>
@@ -482,13 +476,13 @@ export const RemainingArrayType = RemainingArray;
 //	buffer types
 //-----------------------------------------------------------------------------
 
-export function Buffer<V extends ViewMaker<any>>(len: TypeX<number>, view: V): TypeT<ViewInstance<V>>;
-export function Buffer(len: TypeX<number>): TypeT<Uint8Array<ArrayBufferLike>>;
-export function Buffer(len: TypeX<number>, view: ViewMaker<any> = Uint8Array): any {
+export function Buffer<V extends ViewMaker<any>>(len: TypeX<number|bigint>, view: V): TypeT<ViewInstance<V>>;
+export function Buffer(len: TypeX<number|bigint>): TypeT<Uint8Array<ArrayBufferLike>>;
+export function Buffer(len: TypeX<number|bigint>, view: ViewMaker<any> = Uint8Array): any {
 	const x = makex(len);
 	return {
 		get: (s => after(x.get(s),
-			n	=> s.view(view, n),
+			n	=> s.view(view, Number(n)),
 		)) as get<TypedArray>,
 		put: ((s, v) => after(x.put(s, v.length),
 			()	=> after(s.view(view, v.length),
@@ -526,16 +520,16 @@ export const Remainder = RemainingBuffer(Uint8Array);
 //	positional types
 //-----------------------------------------------------------------------------
 
-export function Size<T extends Type>(len: TypeX<number>, type: T, skip0?: false): TypeT<ReadType<T>>;
-export function Size<T extends Type>(len: TypeX<number>, type: T, skip0?: true): TypeT<ReadType<T> | undefined>;
-export function Size<T extends Type>(len: TypeX<number>, type: T, skip0 = false) {
+export function Size<T extends Type>(len: TypeX<number|bigint>, type: T, skip0?: false): TypeT<ReadType<T>>;
+export function Size<T extends Type>(len: TypeX<number|bigint>, type: T, skip0?: true): TypeT<ReadType<T> | undefined>;
+export function Size<T extends Type>(len: TypeX<number|bigint>, type: T, skip0 = false) {
 	const x = makex(len);
 	return {
 		get: (s => after(x.get(s), size => {
 			if (!skip0 || size) {
 				const start = s.tell();
-				return after(read(s.offsetStream(start, size), type), r => {
-					s.seek(start + size);
+				return after(read(s.offsetStream(start, Number(size)), type), r => {
+					s.seek(start + Number(size));
 					return r;
 				});
 			}
@@ -566,10 +560,11 @@ export function Measured<T extends Type>(type: T): TypeT<ReadType<T>> {
 	return Size(measure(type as sync.Type), type);
 }
 
-export function AfterSkip<T extends Type>(skip: number, type: T): TypeT<ReadType<T>> {
+export function AfterSkip<T extends Type>(skip: TypeX<number|bigint>, type: T): TypeT<ReadType<T>> {
+	const x = makex(skip);
 	return {
-		get: (s => (s.skip(skip), read(s, type))) as get<ReadType<T>>,
-		put: ((s, v) => (s.skip(skip), write(s, type, v))) as put<ReadType<T>>
+		get: (s => after(x.get(s), skip => (s.skip(Number(skip)),read(s, type)))) as get<ReadType<T>>,
+		put: ((s, v) => after(x.put(s, 0), skip => (s.skip(Number(skip)), write(s, type, v)))) as put<ReadType<T>>
 	};
 }
 
@@ -580,14 +575,14 @@ export function Aligned<T extends Type>(align: number, type: T): TypeT<ReadType<
 	};
 }
 
-export function Offset<T extends Type>(offset: TypeX<number>, type: T, skip_null?: false): TypeT<ReadType<T>>;
-export function Offset<T extends Type>(offset: TypeX<number>, type: T, skip_null: true): TypeT<ReadType<T> | undefined>;
-export function Offset<T extends Type>(offset: TypeX<number>, type: T, skip_null = false) {
+export function Offset<T extends Type>(offset: TypeX<number|bigint>, type: T, skip_null?: false): TypeT<ReadType<T>>;
+export function Offset<T extends Type>(offset: TypeX<number|bigint>, type: T, skip_null: true): TypeT<ReadType<T> | undefined>;
+export function Offset<T extends Type>(offset: TypeX<number|bigint>, type: T, skip_null = false) {
 	const x = makex(offset);
 	return {
 		get: (s => after(x.get(s), off => {
 			if (!skip_null || off)
-				return read(s.offsetStream(off), type);
+				return read(s.offsetStream(Number(off)), type);
 		})) as get<ReadType<T> | undefined>,
 
 		put: ((s, v) => {
@@ -621,14 +616,14 @@ export const OffsetType = Offset;
 /**
  *  @deprecated, use Offset with skip_null=true instead
  */
-export function MaybeOffset<T extends Type>(offset: TypeX<number>, type: T): TypeT<ReadType<T> | undefined> {
+export function MaybeOffset<T extends Type>(offset: TypeX<number|bigint>, type: T): TypeT<ReadType<T> | undefined> {
 	return Offset(offset, type, true);
 }
 
 export function Search(pattern: Uint8Array): TypeT<number | undefined> {
 	return {
 		get: (s => {
-			const kmp	= new utils.KMP(pattern);
+			const kmp	= new KMP(pattern);
 			const start = s.tell();
 			const chunk = (nextSize: number): any => after(
 				s.view(Uint8Array, nextSize, false),
@@ -711,8 +706,7 @@ export function Try<T extends Record<string, Type>>(type: T) {
 	type R = Partial<ReadType<T>>;
 	return {
 		get: (s => {
-			const obj = {obj: s.obj} as any;
-			s.obj	= obj;
+			const obj = s.pushObj();
 			let tell = s.tell();
 			return tryAfter(() => {
 				let acc: any = undefined;
@@ -724,17 +718,11 @@ export function Try<T extends Record<string, Type>>(type: T) {
 				}
 				return acc;
 			},
-			() => {
-				s.obj = obj.obj;
-				delete obj.obj;
-				return obj;
-			},
+			() => s.popObj(obj),
 			() => {
 				//console.log('Reverting Try type');
 				s.seek(tell);
-				s.obj = obj.obj;
-				delete obj.obj;
-				return obj;
+				return s.popObj(obj);
 			});
 		}) as get<R>,
 
@@ -785,11 +773,10 @@ export function If<T extends Type, F extends Type | undefined = undefined>(test:
 			false_type ? read_merge(s, x ? true_type : false_type) : x ? read_merge(s, true_type) : undefined,
 			() => ({} as MergeType<R>)
 		))) as get<MergeType<R>>,
-		put: ((s, v) => after(x.put(s, v),
-				t => false_type && t !== undefined ? write(s, t ? true_type : false_type as Type, v)
-					: t && write(s, true_type, v)
-			)
-		) as put<MergeType<R>>
+		put: (s => after(x.put(s, s.obj),
+			t => false_type && t !== undefined ? write_merge(s, t ? true_type : false_type as Type)
+				: t && write_merge(s, true_type)
+		)) as put<MergeType<R>>
 	} as TypeT<MergeType<R>>;
 }
 
@@ -800,7 +787,6 @@ type DiscrimSwitch<KName extends string, T extends Record<string | number, any>>
 
 export function Switch<KName extends string, K extends string | number, T extends Record<K, Type>>(test: KName, switches: T) : TypeT<CorrelatedMerge<DiscrimSwitch<KName, T>>>;
 export function Switch<K extends string | number, T extends Record<K, Type>>(test: TypeX<K>, switches: T) : TypeT<ReadType<T[keyof T]>>;
-
 export function Switch<KName extends string, K extends string | number, T extends Record<K, Type>>(test: TypeX<K>, switches: T, discriminator = (value: any) => Discriminator(value, switches as any) as K) {
 	const lookup = (x: any) => switches[x as keyof T] ?? (switches as any).default;
 
@@ -811,10 +797,10 @@ export function Switch<KName extends string, K extends string | number, T extend
 				const t = lookup(s.obj[test]);
 				return t ? read_merge(s, t) : ({} as CorrelatedMerge<R>);
 			}) as get<CorrelatedMerge<R>>,
-			put: ((s, _v) => {
+			put: (s => {
 				const t = lookup(s.obj[test]);
 				if (t !== undefined)
-					return write(s, t, s.obj);
+					return write_merge(s, t);
 			}) as put<CorrelatedMerge<R>>
 		};
 
@@ -833,42 +819,10 @@ export function Switch<KName extends string, K extends string | number, T extend
 						return t ? write(s, t, v) : undefined;
 					}
 				);
-				/*
-				if (!isWriter(test))
-					return write(s, lookup(getx(s, test)), v);
-				const t = discriminator(v);
-				if (t !== undefined)
-					return after(writex(s, test, t as any), () => write(s, switches[t as keyof T], v));
-				*/
 			}) as put<R>
 		};
 	}
 }
-/*
-type DiscrimUnion<T extends Record<string | number, any>> = {
-	[J in keyof T & (string | number)]: [J, ReadType<T[J]>]
-}[keyof T & (string | number)];
-
-type DiscrimWrap<T extends Record<string | number, Type2>> = <K extends keyof T & (string | number)>(key: K, type: T[K]) => Type2;
-
-export function DiscrimSpec<T extends Record<string | number, Type2>>(keySpec: TypeX2<string | number>, cases: T, wrap?: DiscrimWrap<T>): TypeT2<DiscrimUnion<T>> {
-	type R = DiscrimUnion<T>;
-	const getType = (k: any) => {
-		const t = (cases as any)[k] ?? (cases as any).default;
-		return t && (wrap ? (wrap as any)(k, t) : t);
-	};
-	return {
-		get: (s => after(readx2(s, keySpec), k => after(
-			getType(k) ? read2(s, getType(k)) : undefined,
-			data => [k, data] as R
-		))) as get2<R>,
-		put: ((s, v) => after(writex2(s, keySpec, v[0]), () => {
-			const spec = getType(v[0]);
-			return spec ? write2(s, spec, v[1]) : undefined;
-		})) as put2<R>
-	} as TypeT2<R>;
-}
-*/
 
 export interface DeferedType<T> {
 	get(): MaybePromise<T>;
@@ -916,16 +870,11 @@ export function Repeat<T extends Type>(len: TypeX<number>, type: T, split = (v: 
 	const x = makex(len);
 	return {
 		get: (s => after(x.get(s), n => {
-			const obj0 = s.obj;
-			const obj = {} as any;
-			s.obj = obj;
+			s.pushObj();
 			let acc: any = undefined;
 			for (let i = 0; i < n; i++)
 				acc = after(acc, () => read_merge(s, type));
-			return after(acc, () => {
-				s.obj = obj0;
-				return obj;
-			});
+			return after(acc, () => s.popObj());
 		})) as get<R>,
 		put: ((s, v) => {
 			const vs = split(v as ReadType<T>);
@@ -935,27 +884,31 @@ export function Repeat<T extends Type>(len: TypeX<number>, type: T, split = (v: 
 }
 
 export function RemainingRepeat<T extends Type>(type: T, split = (s: any, v: ReadType<T>) => [v]) {
-	type R = MergeType<Partial<ReadType<T>>>;
+	//type R = MergeType<Partial<ReadType<T>>>;
+	type R = Partial<UnionToIntersection<NonNullable<ReadType<T>>>>;
 	return {
 		get: (s => {
-			const obj0 = s.obj;
-			const obj = {} as any;
-			s.obj = obj;
+			s.pushObj();
 			while (s.remaining() !== 0) {
-				const r = read_merge(s, type);
-				if (r instanceof Promise)
-					return asyncPath(r);
+				if (isReader(type)) {
+					const r = type.get(s as any);//, value => merge(s.obj, value));
+					if (r === undefined)
+						break;
+					if (r instanceof Promise)
+						return r.then(r => {merge(s.obj, r); return asyncPath();});
+					merge(s.obj, r);
+				} else {
+					const r = read_merge(s, type);
+					if (r instanceof Promise)
+						return r.then(r => asyncPath());
+				}
 			}
-			s.obj = obj0;
-			return obj;
+			return s.popObj();
 
-			async function asyncPath(first?: Promise<void>) {
-				if (first)
-					await first;
+			async function asyncPath() {
 				while (s.remaining() !== 0)
 					await read_merge(s, type);
-				s.obj = obj0;
-				return obj;
+				return s.popObj();
 			}
 		}) as get<R>,
 		put: ((s, v) => writen(s, type, split(s, v as ReadType<T>))) as put<R>
@@ -970,20 +923,12 @@ interface adapter0<T, D, O=void> {
 	to(x: T, opt: O): MaybePromise<D>;
 	from(x: D, opt: O): MaybePromise<T>;
 }
-type adapter1<T, D, O=void> = (new (x: T, opt: O) => D) | ((x: T, opt: O) => D);
+type adapter1<T, D, O=void> = (new (x: T, opt: O) => D) | ((x: T, opt: O) => MaybePromise<D>);
 
 export type adapter<T, D, O=void> = adapter0<T, D, O> | adapter1<T, D, O>;
 
 function isConstructor<T, D, O>(maker: adapter1<T,D,O>): maker is new (arg: T, opt: O) => D {
 	return maker.prototype?.constructor.name;
-}
-//export 
-function make<T, D, O>(maker: adapter<T,D,O>, x: T, opt?: O): MaybePromise<D> {
-	return typeof maker === 'function' ? (isConstructor(maker) ? new maker(x, opt as O): maker(x, opt as O)) : maker.to(x, opt as O);
-}
-//export 
-function unmake<T, D, O>(maker: adapter<T,D,O>, x: D, from?: (x: D)=>T, opt?: O) {
-	return typeof maker === 'function' ? (from ? from(x) : x) : maker.from(x, opt as O);
 }
 
 export function as<T, D>(type: TypeT<T>, maker: adapter0<T, D, _stream|async._stream>) : TypeT<D>;
@@ -991,9 +936,19 @@ export function as<T, D>(type: TypeT<T>, maker: adapter<T, D, _stream|async._str
 export function as<T extends Type, D>(type: T, maker: adapter<ReadType<T>, D, _stream|async._stream>, from?: (arg: D) => ReadType<T>) : TypeT<D>;
 export function as<T extends Type, D>(type: T, maker: adapter<any, D, _stream|async._stream>, from?: (arg: D) => ReadType<T>) : TypeT<D>;
 export function as<D>(type: Type, maker: adapter<any, D, _stream|async._stream>, from?: (arg: D) => any) : TypeT<D> {
+	const make: (x: any, s: _stream|async._stream)=> MaybePromise<D> = typeof maker !== 'function'
+		? (x, s) => maker.to(x, s)
+		: isConstructor(maker) ? (x, s) => new maker(x, s)
+		: (x, s) => maker(x, s);
+
+	const unmake: (x: D, s: _stream|async._stream) => void = typeof maker !== 'function'
+		? (x, s) => maker.from(x, s)
+		: from ? x => from(x)
+		: x => x;
+
 	return {
-		get: (s => after(read(s, type), v => make(maker, v, s))) as get<D>,
-		put: ((s, v) => write(s, type, unmake(maker, v, from, s))) as put<D>
+		get: (s => after(read(s, type), v => make(v, s))) as get<D>,
+		put: ((s, v) => write(s, type, unmake(v, s))) as put<D>
 	};
 }
 /*
@@ -1009,7 +964,7 @@ export function BitFields(bitfields: any, be?: boolean): TypeT<any> {
 }
 */
 
-export function BitFields<T extends utils.BitFieldDescriptor>(bitfields: T, be?: boolean) {
-	const bitfields2 = utils.BitFields(0, bitfields);
+export function BitFields<T extends BitFieldDescriptor>(bitfields: T, be?: boolean) {
+	const bitfields2 = BitFields0(0, bitfields);
 	return as(UINT(bitfields2.bits, be), bitfields2);
 }

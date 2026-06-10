@@ -1,9 +1,9 @@
 import * as async from './async';
 import * as sync from './sync';
 import * as interop from './interop';
-import * as utils from './utils';
-import { MaybePromise, ReadType, after } from './common';
-import { BitsType, TypedArrayLike, ViewMaker } from './utils';
+import { getUintBits, putUintBits, getBigUintBits, putBigUintBits } from './utilities/typedArray';
+import { BitsType, MaybePromise, ReadType, after } from './common';
+import { TypedArrayLike, ViewMaker } from './utilities/typedArray';
 
 //-----------------------------------------------------------------------------
 //	stream
@@ -233,13 +233,13 @@ export const Bit = {
 		const pos = s.tell_bit();
 		return after(s.view_at(DataView, pos >> 3, 1), dv => {
 			s.skip_bit(1);
-			return !!utils.getUintBits(dv, pos & 7, 1, !s.be);
+			return !!getUintBits(dv, pos & 7, 1, !s.be);
 		});
 	},
 	put(s: _stream, v: boolean) {
 		const pos = s.tell_bit();
 		return after(s.view_at(DataView, pos >> 3, 1), dv => {
-			utils.putUintBits(dv, pos & 7, v ? 1 : 0, 1, !s.be);
+			putUintBits(dv, pos & 7, v ? 1 : 0, 1, !s.be);
 			s.skip_bit(1);
 		});
 	}
@@ -254,13 +254,13 @@ export function Bits(n: interop.TypeX<number>) {
 		const pos = s.tell_bit();
 		return after(s.view_at(DataView, pos >> 3, ((pos & 7) + n + 7) >> 3), dv => {
 			s.skip_bit(n);
-			return utils.getUintBits(dv, pos & 7, n, !s.be);
+			return getUintBits(dv, pos & 7, n, !s.be);
 		});
 	}
 	function writeBitsN(s: _stream, n: number, v: number) {
 		const pos = s.tell_bit();
 		return after(s.view_at(DataView, pos >> 3, ((pos & 7) + n + 7) >> 3), dv => {
-			utils.putUintBits(dv, pos & 7, v, n, !s.be);
+			putUintBits(dv, pos & 7, v, n, !s.be);
 			s.skip_bit(n);
 		});
 	}
@@ -268,13 +268,13 @@ export function Bits(n: interop.TypeX<number>) {
 		const pos = s.tell_bit();
 		return after(s.view_at(DataView, pos >> 3, ((pos & 7) + n + 7) >> 3), dv => {
 			s.skip_bit(n);
-			return utils.getBigUintBits(dv, pos & 7, n, !s.be);
+			return getBigUintBits(dv, pos & 7, n, !s.be);
 		});
 	}
 	function writeBitsB(s: _stream, n: number, v: bigint) {
 		const pos = s.tell_bit();
 		return after(s.view_at(DataView, pos >> 3, ((pos & 7) + n + 7) >> 3), dv => {
-			utils.putBigUintBits(dv, pos & 7, v, n, !s.be);
+			putBigUintBits(dv, pos & 7, v, n, !s.be);
 			s.skip_bit(n);
 		});
 	}

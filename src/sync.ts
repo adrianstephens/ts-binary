@@ -1,5 +1,5 @@
-import { ReadType, merge } from './common';
-import { TypedArray, ViewMaker, ViewInstance } from './utils';
+import { ReadType, merge, common_stream } from './common';
+import { TypedArray, ViewMaker, ViewInstance } from './utilities/typedArray';
 
 //-----------------------------------------------------------------------------
 //	stream
@@ -7,7 +7,7 @@ import { TypedArray, ViewMaker, ViewInstance } from './utils';
 
 export type viewDelegate = <V extends ViewMaker<any>>(type: V, offset: number, len: number) => ViewInstance<V>;
 
-export class _stream {
+export class _stream extends common_stream {
 	readonly kind = 'sync' as const;
 	atend?: (s: _stream) => void;
 
@@ -20,6 +20,7 @@ export class _stream {
 		public be?: boolean,
 		public obj?: any
 	) {
+		super();
 		this.offset0 = offset;
 	}
 
@@ -187,24 +188,18 @@ export function read<T extends TypeReader>(s: _stream, spec: T) : ReadType<T> {
 	if (isReader(spec))
 		return spec.get(s);
 
-	const	obj = {obj: s.obj} as any;
-	s.obj	= obj;
+	const	obj = s.pushObj();
 	Object.entries(spec).forEach(([k, t]) => obj[k] = read(s, t));
-	s.obj	= obj.obj;
-	delete obj.obj;
-	return obj;
+	return s.popObj(obj);
 }
 
 function read_merge<T extends TypeReader>(s: _stream, specs: T) {
 	if (isReader(specs)) {
-		const value = specs.get(s);
-		Object.assign(s.obj, value);
-		if (value?.constructor)
-			Object.setPrototypeOf(s.obj, value.constructor.prototype);
+		merge(s.obj, specs.get(s));
 
 	} else {
 		for (const [k, v] of Object.entries(specs))
-			merge(s.obj, k, read(s, v));
+			merge(s.obj, read(s, v), k);
 	}
 }
 
@@ -214,27 +209,21 @@ export function write(s: _stream, type: TypeWriter, value: any) : void {
 		return;
 	}
 
-	if (typeof value === 'object' && value !== null) {
-		value.obj = s.obj;
-		s.obj = value;
-	}
+	if (typeof value === 'object' && value !== null)
+		s.pushObj(value);
+
 	Object.entries(type).map(([k, t]) => write(s, t, value[k]));
 
-	if (typeof value === 'object' && value !== null) {
-		s.obj = value.obj;
-		delete value.obj;
-	}
+	if (typeof value === 'object' && value !== null)
+		s.popObj(value);
 }
 
 export function readn<T extends TypeReader>(s: _stream, type: T, n: number) : ReadType<T>[] {
 	const result: ReadType<T>[] = [];
-	(result as any).obj = s.obj;
-	s.obj = result;
+	s.pushObj(result);
 	for (let i = 0; i < n; i++)
 		result.push(read(s, type));
-	s.obj = (result as any).obj;
-	delete (result as any).obj;
-	return result;
+	return s.popObj(result);
 }
 
 export function writen(s: _stream, type: any, v: any) {

@@ -1,5 +1,5 @@
-import { MaybePromise, ReadType, after, merge } from './common';
-import { ViewMaker, ViewInstance, TypedArray, TypedArrayLike } from './utils';
+import { MaybePromise, ReadType, after, merge, common_stream } from './common';
+import { ViewMaker, ViewInstance, TypedArray, TypedArrayLike } from './utilities/typedArray';
 
 //-----------------------------------------------------------------------------
 //	stream
@@ -7,7 +7,7 @@ import { ViewMaker, ViewInstance, TypedArray, TypedArrayLike } from './utils';
 
 export type viewDelegate = <V extends ViewMaker<any>>(type: V, offset: number, len: number) => MaybePromise<ViewInstance<V>>;
 
-export class _stream {
+export class _stream extends common_stream {
 	readonly kind = 'async' as const;
 	atend?: (s: _stream) => Promise<void>;
 
@@ -20,6 +20,7 @@ export class _stream {
 		public be?: boolean,
 		public obj?: any
 	) {
+		super();
 		this.offset0 = offset;
 	}
 
@@ -260,29 +261,21 @@ export async function read<T extends TypeReader>(s: _stream, spec: T) : Promise<
 	if (isReader(spec))
 		return spec.get(s);
 
-	const obj = {obj: s.obj} as any;
-	s.obj	= obj;
-
+	const obj = s.pushObj();
 	await Object.entries(spec).reduce((acc: any, [k, t]) => 
 		acc.then(() => read(s, t).then(value => obj[k] = value)),
 		Promise.resolve()
 	);
-
-	s.obj	= obj.obj;
-	delete obj.obj;
-	return obj;
+	return s.popObj(obj);
 }
 
 async function read_merge<T extends TypeReader>(s: _stream, specs: T): Promise<void> {
 	if (isReader(specs)) {
-		const value = await specs.get(s);
-		Object.assign(s.obj, value);
-		if (value?.constructor)
-			Object.setPrototypeOf(s.obj, value.constructor.prototype);
+		merge(s.obj, await specs.get(s));
 
 	} else {
 		await Object.entries(specs).reduce((acc: any, [k, t]) =>
-			acc.then(() => read(s, t).then(value => merge(s.obj, k, value))),
+			acc.then(() => read(s, t).then(value => merge(s.obj, value, k))),
 			Promise.resolve()
 		);
 	}
@@ -294,19 +287,15 @@ export async function write(s: _stream, type: TypeWriter, value: any) : Promise<
 		return;
 	}
 
-	if (typeof value === 'object' && value !== null) {
-		value.obj = s.obj;
-		s.obj = value;
-	}
+	if (typeof value === 'object' && value !== null)
+		s.pushObj(value);
 
 	await Object.entries(type).reduce((acc: any, [k, t]) => 
 		acc.then(() => write(s, t, value[k]))
 	, Promise.resolve());
 
-	if (typeof value === 'object' && value !== null) {
-		s.obj = value.obj;
-		delete value.obj;
-	}
+	if (typeof value === 'object' && value !== null)
+		s.popObj(value);
 }
 
 //-----------------------------------------------------------------------------

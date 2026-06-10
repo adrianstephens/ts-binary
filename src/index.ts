@@ -1,15 +1,19 @@
 export * from './sync';
 export * from './types';
 export * from './common';
-export { BitField } from './utils';
+export { BitField } from './utilities/bitfields';
 export * as async from './async';
-export * as utils from './utils';
 export * as interop from './interop';
 export { ReadClass, Class, Extend } from './interop';
 export * as bit from './bit';
 
-import * as utils from './utils';
-import { ReadType } from './common';
+export * as bitfields from './utilities/bitfields';
+export * as text from './utilities/text';
+export { CRC as crc } from './utilities/crc';
+export { Float as float } from './utilities/float';
+export * as typedArray from './utilities/typedArray';
+
+import { ReadType, IsPow2, isPow2, lowestSet } from './common';
 import { as } from './types';
 import * as interop from './interop';
 
@@ -171,14 +175,22 @@ export function Enum<E extends EnumType>(e: E) {
 //-----------------------------------------------------------------------------
 // flags helpers
 //-----------------------------------------------------------------------------
+// Helper to generate all bit combinations
+type BitCombinations<T extends number, Acc extends number = 0> =
+	[T] extends [never]
+		? Acc
+		: T extends T
+			? BitCombinations<Exclude<T, T>, Acc | T | (Acc | T)>
+			: never;
+
 
 export function FlagsV<T extends Record<string, number>>(_: T) {
-	return (x: number) => x as utils.BitCombinations<T[keyof T]>;
+	return (x: number) => x as BitCombinations<T[keyof T]>;
 }
 
 type FlagsObject<E extends EnumType, NoFalse extends boolean = true> = NoFalse extends true
-	? Partial<{ [K in keyof E as utils.IsPow2<E[K]> extends true ? K : never]: true; }> & { [K in keyof E as utils.IsPow2<E[K]> extends false ? K : never]: E[K] extends bigint ? bigint : number; }
-	: { [K in keyof E]: utils.IsPow2<E[K]> extends true ? boolean : E[K] extends bigint ? bigint : number; };
+	? Partial<{ [K in keyof E as IsPow2<E[K]> extends true ? K : never]: true; }> & { [K in keyof E as IsPow2<E[K]> extends false ? K : never]: E[K] extends bigint ? bigint : number; }
+	: { [K in keyof E]: IsPow2<E[K]> extends true ? boolean : E[K] extends bigint ? bigint : number; };
 
 export function Flags<E extends EnumType, NoFalse extends boolean = true>(e: E, noFalse: NoFalse = true as NoFalse) {
 	type V = EnumValue<E>;
@@ -190,13 +202,13 @@ export function Flags<E extends EnumType, NoFalse extends boolean = true>(e: E, 
 			?	e1.reduce((obj, [k, v]) => {
 					const y = x & BigInt(v);
 					if (y || !noFalse)
-						obj[k] = !utils.isPow2(v) ? y / BigInt(utils.lowestSet(v)) : !!y;
+						obj[k] = !isPow2(v) ? y / BigInt(lowestSet(v)) : !!y;
 					return obj;
 				}, {} as Record<string, bigint | boolean>)
 			:	e1.reduce((obj, [k, v]) => {
 					const y = x & v;
 					if (y || !noFalse)
-						obj[k] = !utils.isPow2(v) ? y / utils.lowestSet(v) : !!y;
+						obj[k] = !isPow2(v) ? y / lowestSet(v) : !!y;
 					return obj;
 				}, {} as Record<string, number | boolean>)
 			) as FlagsObject<E, NoFalse>;

@@ -91,7 +91,7 @@ const numbersData: bin.ReadType<typeof numbersSpec> = {
 	uint104:	0x0102030405060708090a0b0cn,
 	uint128:	0x0102030405060708090a0b0c0d0e0f10n,
 	float16:	1.5,
-	float128:	bin.utils.Float(112, 15)(1.5),
+	float128:	bin.float.Float(112, 15)(1.5),
 	uintN:		100,
 };
 
@@ -105,7 +105,7 @@ test('Numbers: read and write', () => {
 });
 
 test('Float16: infinities and NaN roundtrip', () => {
-	const f16 = bin.utils.float16;
+	const f16 = bin.float.float16;
 
 	const a = f16(1.5), b = f16(2.5);
 	const c = a.add(b);
@@ -124,7 +124,7 @@ test('Float16: infinities and NaN roundtrip', () => {
 });
 
 test('Float16: denormals decode and encode', () => {
-	const f16 = bin.utils.float16;
+	const f16 = bin.float.float16;
 	assert.equal(f16.to(0x0001).valueOf(), 2 ** -24);
 	assert.equal(f16.to(0x03ff).valueOf(), (1023 / 1024) * (2 ** -14));
 	assert.equal(f16.to(0x0400).valueOf(), 2 ** -14);
@@ -139,7 +139,7 @@ test('Float128', () => {
 	console.log(+c64);
 
 
-	const f128 = bin.utils.float128;
+	const f128 = bin.float.float128;
 	const a = f128(a64), b = f128(b64);
 	const c = a.add(b).sub(b);
 	console.log(+c);
@@ -478,14 +478,14 @@ test('Flags: convert flags to object', () => {
 //=============================================================================
 
 test('BitFields: extract bit ranges', () => {
-	const bitFields = bin.utils.BitFields(0, { a: 4, b: 4 });
+	const bitFields = bin.bitfields.BitFields(0, { a: 4, b: 4 });
 	const result = bitFields.to(0xAB);
 	assert.equal(result.a, 0xB);
 	assert.equal(result.b, 0xA);
 });
 
 test('BitFields: tuple descriptor support', () => {
-	const bitFields = bin.utils.BitFields(0, [4, 4] as const);
+	const bitFields = bin.bitfields.BitFields(0, [4, 4] as const);
 	const result = bitFields.to(0xAB);
 	assert.equal(result[0], 0xB);
 	assert.equal(result[1], 0xA);

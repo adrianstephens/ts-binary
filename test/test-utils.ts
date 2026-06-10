@@ -1,4 +1,6 @@
-import * as utils from '../dist/utils';
+import * as float from '../dist/utilities/float';
+import * as bitfields from '../dist/utilities/bitfields';
+import * as typedArray from '../dist/utilities/typedArray';
 
 function assertClose(label: string, got: number, expected: number, rel = 1e-12, abs = 1e-12) {
 	const diff = Math.abs(got - expected);
@@ -14,11 +16,11 @@ function rb() {
 function r32() {
 	return (Math.random() * 0x100000000) >>> 0;
 }         
-const got = +utils.float16(-1).pow(utils.float16(1/3));
+const got = +float.float16(-1).pow(float.float16(1/3));
 
 const fa = 1.1, fb = 2.3;
-const a = utils.float16(fa);
-const b = utils.float16(fb);
+const a = float.float16(fa);
+const b = float.float16(fb);
 console.log(`a = ${a}, b = ${b}`);
 console.log(`a + b = ${+a.add(b)} (${fa + fb})`);
 console.log(`a - b = ${+a.sub(b)} (${fa - fb})`);
@@ -33,7 +35,7 @@ for (const [x, y] of [
 	[10, -0.5],
 	[2, 10],
 ] as const) {
-	const got = +(utils.float16(x) as any).pow(utils.float16(y));
+	const got = +(float.float16(x) as any).pow(float.float16(y));
 	const expected = x ** y;
 	assertClose(`float16 pow ${x}**${y}`, got, expected, 6e-2, 1e-3);
 }
@@ -44,14 +46,14 @@ for (const [x, y] of [
 	[0.9, -12.5],
 	[2, 0.5],
 ] as const) {
-	const got = +(utils.float128(x) as any).pow(utils.float128(y));
+	const got = +(float.float128(x) as any).pow(float.float128(y));
 	const expected = x ** y;
 	assertClose(`float128 pow ${x}**${y}`, got, expected, 1e-11, 1e-12);
 }
 
 console.log('OK: pow sanity assertions passed');
 
-const Uint3Array = utils.UintTypedArray(41);
+const Uint3Array = typedArray.Uint(41);
 const b3 = new Uint3Array(32);
 
 for (let i = 0; i < 32; i++)
@@ -61,16 +63,16 @@ for (const i of b3)
 	console.log(i);
 
 
-const Float16Array = utils.BitFieldsTypedArray(utils.float16);
+const Float16Array = typedArray.BitFields(float.float16);
 const f16 = new Float16Array(new ArrayBuffer(64), 0, 32);
 for (let i = 0; i < 32; i++)
-	f16[i] = utils.float16(i / 10);
+	f16[i] = float.float16(i / 10);
 
 for (const i of f16)
 	console.log(+i);
 
 
-const StructArray = utils.BitFieldsTypedArray(utils.BitFields(0, {a:1, b:2, c:3} as const));
+const StructArray = typedArray.BitFields(bitfields.BitFields(0, {a:1, b:2, c:3} as const));
 const sa = new StructArray(new ArrayBuffer(64), 0, 32);
 for (let i = 0; i < 32; i++)
 	sa[i] = {a: i & 1, b: (i >> 1) & 3, c: (i >> 3) & 7};
@@ -98,12 +100,12 @@ for (let t = 0; t < 300; t++) {
 		expected[by] = b ? (expected[by] | m) : (expected[by] & ~m);
 	}
 
-	utils.putUintBits(new DataView(arr.buffer), offset, val, bits, le);
+	typedArray.putUintBits(new DataView(arr.buffer), offset, val, bits, le);
 	for (let i = 0; i < nbytes; i++)
 		if (arr[i] !== expected[i])
 			throw new Error(`putUintBits fail: le=${le} bits=${bits} offset=${offset}`);
 
-	const got = utils.getUintBits(new DataView(arr.buffer), offset, bits, le) >>> 0;
+	const got = typedArray.getUintBits(new DataView(arr.buffer), offset, bits, le) >>> 0;
 	let exp = 0;
 	for (let i = 0; i < bits; i++) {
 		const bi = offset + i;
@@ -135,12 +137,12 @@ for (let t = 0; t < 180; t++) {
 		expected[by] = b ? (expected[by] | m) : (expected[by] & ~m);
 	}
 
-	utils.putBigUintBits(new DataView(arr.buffer), offset, val, bits, le);
+	typedArray.putBigUintBits(new DataView(arr.buffer), offset, val, bits, le);
 	for (let i = 0; i < nbytes; i++)
 		if (arr[i] !== expected[i])
 			throw new Error(`putBigUintBits fail: le=${le} bits=${bits} offset=${offset}`);
 
-	const got = utils.getBigUintBits(new DataView(arr.buffer), offset, bits, le);
+	const got = typedArray.getBigUintBits(new DataView(arr.buffer), offset, bits, le);
 	let exp = 0n;
 	for (let i = 0; i < bits; i++) {
 		const bi = offset + i;
