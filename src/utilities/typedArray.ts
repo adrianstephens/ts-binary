@@ -1,451 +1,5 @@
-import { BitInput, BitOutput, BitAdapterN, BitAdapterSigned, BitFieldDescriptor, BitFieldDescriptorAdapter, calcBits, isLittleEndian} from './bitfields'
-
-interface BitViewer<T> {
-	get(dv: DataView, offset: number): T;
-	set(dv: DataView, offset: number, v: T): void;
-}
-
-function bytesView<N extends number>(len: N, littleEndian?: boolean): BitViewer<bigint|number> {
-	if (len >= 7) {
-		const rem = len % 7;
-		const remGetter = bytesView(rem, littleEndian);
-		return littleEndian ? {
-			get(dv: DataView, offset: number) {
-				let result = 0n, i = len as number;
-				while (i >= 7) {
-					i -= 4;
-					result = (result << 32n) | BigInt(dv.getUint32(offset + i, true));
-				}
-				return (result << BigInt(i * 8)) + BigInt(remGetter.get(dv, offset));
-			},
-			set(dv: DataView, offset: number, v: bigint) {
-				const end = offset + len;
-				while (offset + 7 <= end) {
-					dv.setUint32(offset, Number(v & 0xffffffffn), true);
-					v >>= 32n;
-					offset += 4;
-				}
-				remGetter.set(dv, offset, Number(v));
-			}
-
-		} : {
-			get(dv: DataView, offset: number) {
-				const end = offset + len;
-				let result = 0n;
-				while (offset + 7 <= end) {
-					result = (result << 32n) | BigInt(dv.getUint32(offset));
-					offset += 4;
-				}
-				return (result << BigInt((end - offset) * 8)) + BigInt(remGetter.get(dv, offset));
-			},
-			set(dv: DataView, offset: number, v: bigint) {
-				let i = len as number;
-				while (i >= 7) {
-					i -= 4;
-					dv.setUint32(offset + i, Number(v & 0xffffffffn));
-					v >>= 32n;
-				}
-				remGetter.set(dv, offset, Number(v));
-			}
-		}
-	} else {
-		const tableLE: BitViewer<number>[] = [
-			{get: (dv, o) => dv.getUint16(o, true), set: (dv, o, v) => dv.setUint16(o, v, true)},
-			{get: (dv, o) => dv.getUint16(o, true) | (dv.getInt8(o + 2) << 16), set: (dv, o, v) => (dv.setUint16(o, v, true), dv.setUint8(o + 2, v >> 16))},
-			{get: (dv, o) => dv.getUint32(o, true), set: (dv, o, v) => dv.setUint32(o, v, true)},
-			{get: (dv, o) => dv.getUint32(o, true) + dv.getInt8(o + 4) * 2**32, set: (dv, o, v) => (dv.setUint32(o, v, true), dv.setUint8(o + 4, Math.floor(v / 2**32)))},
-			{get: (dv, o) => dv.getUint32(o, true) + dv.getInt16(o + 4, true) * 2**32, set: (dv, o, v) => (dv.setUint32(o, v, true), dv.setUint16(o + 4, Math.floor(v / 2**32), true))},
-		];
-
-		const tableBE: BitViewer<number>[] = [
-			{get: (dv, o) => dv.getUint16(o), set: (dv, o, v) => dv.setUint16(o, v)},
-			{get: (dv, o) => (dv.getUint16(o) << 8) | dv.getInt8(o + 2), set: (dv, o, v) => (dv.setUint16(o, v >> 8), dv.setUint8(o + 2, v))},
-			{get: (dv, o) => dv.getUint32(o), set: (dv, o, v) => dv.setUint32(o, v)},
-			{get: (dv, o) => dv.getUint32(o) * 2**8 + dv.getInt8(o + 4), set: (dv, o, v) => (dv.setUint32(o, Math.floor(v / 2**8)), dv.setUint8(o + 4, v))},
-			{get: (dv, o) => dv.getUint32(o) * 2**16 + dv.getInt16(o + 4), set: (dv, o, v) => (dv.setUint32(o, Math.floor(v / 2**16)), dv.setUint16(o + 4, v))},
-		];
-		return len == 1
-			? {get: (dv, o) => dv.getUint8(o), set: (dv, o, v: number) => dv.setUint8(o, v)}
-			: littleEndian ? tableLE[len - 2] : tableBE[len - 2];
-	}
-}
-
-
-export function bitsView<N extends number>(len: N, littleEndian?: boolean, fixedOffset?: number): BitViewer<bigint|number> {
-	if (fixedOffset !== undefined) {
-		const shift = fixedOffset & 7;
-		const end  	= len + shift;
-		const bytes = bytesView((end + 7) >> 3, littleEndian);
-
-		const shift1		= littleEndian ? shift : (8 - end) & 7;
-		const shift2: any	= len > 32 ? BigInt(shift1) : shift1;
-		const mask: any		= len > 32 ? ((1n << BigInt(len)) - 1n) << shift2 : ((1 << len) - 1) << shift1;
-		return shift1 ? {
-			get: (dv: DataView, offset: number) => ((bytes.get(dv, offset >> 3) as any) >> shift2) & mask,
-			set: (dv: DataView, offset: number, v: any) => {
-				const boffset = offset >> 3;
-				bytes.set(dv, boffset, ((bytes.get(dv, boffset) as any) & ~mask) | ((v << shift2) & mask));
-			}
-		} : len & 7 ? {
-			get: (dv: DataView, offset: number) => (bytes.get(dv, offset >> 3) as any) & mask,
-			set: (dv: DataView, offset: number, v: any) => {
-				const boffset = offset >> 3;
-				bytes.set(dv, boffset, ((bytes.get(dv, boffset) as any) & ~mask) | (v & mask));
-			}
-		} : {
-			get: (dv: DataView, offset: number) => bytes.get(dv, offset >> 3),
-			set: (dv: DataView, offset: number, v: any) => bytes.set(dv, offset >> 3, v)
-		};
-	}
-
-	if (len > 32) {
-		const mask = (1n << BigInt(len)) - 1n;
-
-		return littleEndian ? {
-			get(dv: DataView, offset: number) {
-				const shift = offset & 7;
-				return (getBigUint(dv, offset >> 3, (shift + len + 7) >> 3, true) >> BigInt(shift)) & mask;
-			},
-			set(dv: DataView, offset: number, v: bigint) {
-				const pad0	= offset & 7;
-				const end	= len + pad0;
-				const boffset = offset >> 3;
-				const blast	= (end - 1) >> 3;
-				const pad1	= end & 7;
-
-				v &= mask;
-				if (pad0)
-					v = (v << BigInt(pad0)) | (BigInt(dv.getUint8(boffset) & (0xff >> (8 - pad0))));
-				if (pad1)
-					v |= BigInt(dv.getUint8(boffset + blast) & (0xff << pad1)) << BigInt(blast << 3);
-
-				putBigUint(dv, boffset, v, blast + 1, true);
-			}
-		} : {
-			get(dv: DataView, offset: number) {
-				const end = (offset & 7) + len;
-				return (getBigUint(dv, offset >> 3, (end + 7) >> 3, false) >> BigInt((8 - end) & 7)) & mask;
-			},
-			set(dv: DataView, offset: number, v: bigint) {
-				const pad0	= offset & 7;
-				const end	= len + pad0;
-				const boffset = offset >> 3;
-				const blast	= (end - 1) >> 3;
-				const pad1	= end & 7;
-
-				v &= mask;
-				if (pad1)
-					v = (v << BigInt(8 - pad1)) | (BigInt(dv.getUint8(boffset + blast) & (0xff >> pad1)));
-				if (pad0)
-					v |= BigInt(dv.getUint8(boffset) & (0xff << (8 - pad0))) << BigInt(blast << 3);
-
-				putBigUint(dv, boffset, v, blast + 1, false);
-			}
-		};
-	} else {
-		const mask = (1 << len) - 1;
-
-		return littleEndian ? {
-			get(dv: DataView, offset: number) {
-				const shift		= offset & 7;
-				const blen  	= (len + shift + 7) >> 3;
-				const x			= getUint(dv, offset >> 3, blen, true);
-				return (blen < 4 ? x >> shift : x / 2 ** shift) & mask;
-			},
-			set(dv: DataView, offset: number, v: number) {
-				const shift		= offset & 7;
-				const blen  	= (len + shift + 7) >> 3;
-				const boffset	= offset >> 3;
-				if (blen < 4)
-					putUint(dv, boffset, (getUint(dv, boffset, blen, true) & ~(mask << shift)) | ((v & mask) << shift), blen, true);
-				else
-					putUint(dv, boffset, Number((BigInt(getUint(dv, boffset, blen, true)) & ~(BigInt(mask) << BigInt(shift))) | (BigInt(v & mask) << BigInt(shift))), blen, true);
-			}
-		} : {
-			get(dv: DataView, offset: number) {
-				const end  		= len + (offset & 7);
-				const blen  	= (end + 7) >> 3;
-				const shift		= (8 - end) & 7;
-				const x			= getUint(dv, offset >> 3, blen, false);
-				return (blen < 4 ? x >> shift : x / 2 ** shift) & mask;
-			},
-			set(dv: DataView, offset: number, v: number) {
-				const end  		= len + (offset & 7);
-				const blen  	= (end + 7) >> 3;
-				const boffset	= offset >> 3;
-				const shift		= (8 - end) & 7;
-				if (blen < 4)
-					putUint(dv, boffset, (getUint(dv, boffset, blen, false) & ~(mask << shift)) | ((v & mask) << shift), blen, false);
-				else
-					putUint(dv, boffset, Number((BigInt(getUint(dv, boffset, blen, false)) & ~(BigInt(mask) << BigInt(shift))) | (BigInt(v & mask) << BigInt(shift))), blen, false);
-			}
-		};
-	}
-}
-
-function BitViewerUnsigned<N extends number>(bits: N, be = false, fixedOffset?: number): BitViewer<BitInput<N>> {
-	type T = BitInput<N>;
-	const getter = bitsView(bits, !be, fixedOffset);
-	return bits > 32 && bits <= 52
-		? {
-			get:(dv, offset)	=> getter.get(dv, offset) as T,
-			set:(dv, offset, v)	=> getter.set(dv, offset, BigInt(v)),
-		} : {
-			get:(dv, offset)	=> getter.get(dv, offset) as T,
-			set:(dv, offset, v)	=> getter.set(dv, offset, v),
-		};
-}
-
-function BitViewerSigned<N extends number>(bits: N, be = false, fixedOffset?: number): BitViewer<BitInput<N>> {
-	const a = BitAdapterSigned(bits);
-	const getter = bitsView(bits, !be, fixedOffset);
-	return {
-		get: (dv, offset)		=> a.to(getter.get(dv, offset) as BitInput<N>),
-		set: (dv, offset, v)	=> getter.set(dv, offset, v)
-	};
-}
-
-function BitFieldsViewer<T extends BitFieldDescriptor>(desc: T, be = false, fixedOffset?: number): BitViewer<BitOutput<T>> {
-	if (typeof desc === 'number')
-		return (desc < 0 ? BitViewerSigned(-desc, be, fixedOffset) : BitViewerUnsigned(desc, be, fixedOffset)) as BitViewer<BitOutput<T>>;
-
-	const b = desc as BitFieldDescriptorAdapter<any, any>;
-	if (b.descriptor) {
-		const viewer = BitFieldsViewer(b.descriptor);
-		return {
-			get: (dv, offset)		=> b.to(viewer.get(dv, offset)),
-			set: (dv, offset, w)	=> viewer.set(dv, offset, b.from(w))
-		};
-	}
-	
-	const a = desc as BitAdapterN<any, any>;
-	if (typeof a.bits === 'number') {
-		const viewer = BitViewerUnsigned(a.bits, be, fixedOffset);
-		return {
-			get: (dv, offset)		=> a.to(viewer.get(dv, offset)),
-			set: (dv, offset, w)	=> viewer.set(dv, offset, a.from(w))
-		};
-	}
-
-	const	props: PropertyDescriptorMap = {};
-	let		offset = 0;
-	for (const key in desc) {
-		const value		= desc[key] as any;
-		const viewer	= BitFieldsViewer(value, be, fixedOffset !== undefined ? fixedOffset + offset : undefined);
-
-		const localOffset = offset;
-		props[key] = {
-			enumerable: true,
-			get(this: any)				{ return viewer.get(this.__dv, this.__offset + localOffset); },
-			set(this: any, value: any)	{ viewer.set(this.__dv, this.__offset + localOffset, value); }
-		}
-
-		offset += calcBits(value);
-	}
-
-	const proto = Object.create(null);
-	Object.defineProperties(proto, props);
-
-	const get = (dv: DataView, offset: number) => {
-		const result = Object.create(proto);
-		Object.defineProperty(result, '__dv', {value: dv, enumerable: false, writable: false});
-		Object.defineProperty(result, '__offset', {value: offset, enumerable: false, writable: false});
-		return result;
-	};
-
-	return {
-		get,
-		set(dv: DataView, offset: number, v: any) {//BitsOutput<T>) {
-			const result = get(dv, offset);
-			for (const i in v)
-				result[i] = v[i];
-		}
-	};
-}
-
-function BitArrayViewer<C extends number, N extends number>(count: C, bits: N, be = false): BitViewer<BitInput<N>[]> {
-	const getter = bitsView(bits, !be);
-	return {
-		get(dv: DataView, offset: number) {
-			return new Proxy({}, {
-				get(_target, prop) {
-					if (prop === 'length')
-						return count;
-					const index = typeof prop === 'string' ? Number(prop) : NaN;
-					if (!isNaN(index) && index >= 0 && index < count)
-						return getter.get(dv, offset + index * bits);
-					return undefined;
-				},
-				set(_target, prop, value) {
-					const index = typeof prop === 'string' ? Number(prop) : NaN;
-					if (!isNaN(index) && index >= 0 && index < count) {
-						getter.set(dv, offset + index * bits, value);
-						return true;
-					}
-					return false;
-				}
-			}) as BitInput<N>[];
-		},
-		set(dv: DataView, offset: number, v: BitInput<N>[]) {
-			for (let i = 0; i < count; i++)
-				getter.set(dv, offset + i * bits, v[i]);
-		}
-	};
-}
-
-//-----------------------------------------------------------------------------
-//	integers
-//-----------------------------------------------------------------------------
-
-// get/put 1-7 byte integers from/to DataView (truncates to 52 bits)
-
-export function getUint(dv: DataView, offset: number, len: number, littleEndian?: boolean) {
-	let result = 0;
-	if (littleEndian) {
-		if (len & 1)
-			result = dv.getUint8(offset + (len & 6));
-		if (len & 2)
-			result = (result << 16) | dv.getUint16(offset + (len & 4), true);
-		if (len & 4)
-			result = (result & 0x0fffff) * (2**32) + dv.getUint32(offset, true);
-	} else {
-		if (len & 1)
-			result = dv.getUint8(offset);
-		if (len & 2)
-			result = (result << 16) | dv.getUint16(offset + (len & 1), false);
-		if (len & 4)
-			result = (result & 0x0fffff) * (2**32) + dv.getUint32(offset + (len & 3), false);
-	}
-	return result;
-}
-
-export function putUint(dv: DataView, offset: number, v: number, len: number, littleEndian?: boolean) {
-	if (littleEndian) {
-		if (len & 4) {
-			dv.setUint32(offset, v & 0xffffffff, true);
-			v = Math.floor(v / 2**32);
-		}
-		if (len & 2) {
-			dv.setUint16(offset + (len & 4), v & 0xffff, true);
-			v >>= 16;
-		}
-		if (len & 1)
-			dv.setUint8(offset + (len & 6), v & 0xff);
-	} else {
-		if (len & 4) {
-			dv.setUint32(offset + (len & 3), v & 0xffffffff);
-			v = Math.floor(v / 2**32);
-		}
-		if (len & 2) {
-			dv.setUint16(offset + (len & 1), v & 0xffff);
-			v >>= 16;
-		}
-		if (len & 1)
-			dv.setUint8(offset, v & 0xff);
-	}
-}
-
-export function getBigUint(dv: DataView, offset: number, len: number, littleEndian?: boolean) {
-	let result = 0n;
-	if (littleEndian) {
-		while (len >= 7) {
-			len -= 4;
-			result = (result << 32n) | BigInt(dv.getUint32(offset + len, true));
-		}
-		return (result << BigInt(len * 8)) + BigInt(getUint(dv, offset, len, true));
-	} else {
-		const end = offset + len;
-		while (offset + 7 <= end) {
-			result = (result << 32n) | BigInt(dv.getUint32(offset));
-			offset += 4;
-		}
-		return (result << BigInt((end - offset) * 8)) + BigInt(getUint(dv, offset, end - offset));
-	}
-}
-
-export function putBigUint(dv: DataView, offset: number, v: bigint, len: number, littleEndian?: boolean) {
-	if (littleEndian) {
-		const end = offset + len;
-		while (offset + 7 <= end) {
-			dv.setUint32(offset, Number(v & 0xffffffffn), true);
-			v >>= 32n;
-			offset += 4;
-		}
-		putUint(dv, offset, Number(v), end - offset, true);
-	} else {
-		while (len >= 7) {
-			len -= 4;
-			dv.setUint32(offset + len, Number(v & 0xffffffffn));
-			v >>= 32n;
-		}
-		putUint(dv, offset, Number(v), len, false);
-	}
-}
-export function getUintBits(dv: DataView, offset: number, len: number, littleEndian?: boolean) {
-	const pad0 = offset & 7;
-	const end = len + pad0;
-	if (end >= 32)
-		return Number(getBigUintBits(dv, offset, len, littleEndian));
-	
-	const x = getUint(dv, offset >> 3, (end + 7) >> 3, littleEndian);
-	return (littleEndian ? (x >> pad0) : (x >> ((8 - end) & 7))) & ((1 << len) - 1);
-}
-
-export function putUintBits(dv: DataView, offset: number, v: number, len: number, littleEndian?: boolean) {
-	const pad0	= offset & 7;
-	const end	= len + pad0;
-	if (end >= 32)
-		return putBigUintBits(dv, offset, BigInt(v), len, littleEndian);
-
-	const boffset	= offset >> 3;
-	const blast		= (end - 1) >> 3;
-	const pad1		= end & 7;
-
-	v &= (1 << len) - 1;
-	if (littleEndian) {
-		if (pad0)
-			v = (v << pad0) | (dv.getUint8(boffset) & (0xff >> (8 - pad0)));
-		if (pad1)
-			v |= (dv.getUint8(boffset + blast) & (0xff << pad1)) << (blast << 3);
-	} else {
-		if (pad1)
-			v = (v << (8 - pad1)) | (dv.getUint8(boffset + blast) & (0xff >> pad1));
-		if (pad0)
-			v |= (dv.getUint8(boffset) & (0xff << (8 - pad0))) << (blast << 3);
-	}
-
-	putUint(dv, boffset, v, blast + 1, littleEndian);
-}
-
-export function getBigUintBits(dv: DataView, offset: number, len: number, littleEndian?: boolean) {
-	const end = (offset & 7) + len;
-	const x = getBigUint(dv, offset >> 3, (end + 7) >> 3, littleEndian);
-	return (littleEndian ? (x >> BigInt(offset & 7)) : (x >> BigInt((8 - end) & 7))) & ((1n << BigInt(len)) - 1n);
-}
-
-export function putBigUintBits(dv: DataView, offset: number, v: bigint, len: number, littleEndian?: boolean) {
-	const pad0	= offset & 7;
-	const end	= len + pad0;
-
-	const boffset	= offset >> 3;
-	const blast		= (end - 1) >> 3;
-	const pad1		= end & 7;
-
-	v &= (1n << BigInt(len)) - 1n;
-	if (littleEndian) {
-		if (pad0)
-			v = (v << BigInt(pad0)) | (BigInt(dv.getUint8(boffset) & (0xff >> (8 - pad0))));
-		if (pad1)
-			v |= BigInt(dv.getUint8(boffset + blast) & (0xff << pad1)) << BigInt(blast << 3);
-	} else {
-		if (pad1)
-			v = (v << BigInt(8 - pad1)) | (BigInt(dv.getUint8(boffset + blast) & (0xff >> pad1)));
-		if (pad0)
-			v |= BigInt(dv.getUint8(boffset) & (0xff << (8 - pad0))) << BigInt(blast << 3);
-	}
-
-	putBigUint(dv, boffset, v, blast + 1, littleEndian);
-}
+import { isLittleEndian } from '../common'
+import { Descriptor, calcBits, BitViewer, BitViewerSigned, BitViewerUnsigned, BitFieldsViewer } from './bitfields'
 
 //-----------------------------------------------------------------------------
 //	buffers
@@ -506,7 +60,7 @@ export interface TypedArrayLike {
 }
 export type ViewMaker<T> = (new(a: ArrayBufferLike, offset: number, length: number)=>T) & {BYTES_PER_ELEMENT?: number};
 export type TypedElement<T> = T extends TypedArray<infer R> ? R : T extends TypedArrayConstructor<infer R> ? R : never;
-
+/*
 export interface TypedArrayConstructor<T extends TypedArray = TypedArray> {
 	BYTES_PER_ELEMENT?: number;
 	new(length: number): T;
@@ -521,7 +75,21 @@ export interface TypedArrayConstructor<T extends TypedArray = TypedArray> {
 	from(elements: Iterable<TypedElement<T>>): T;
 	from<U>(elements: Iterable<U>, mapfn?: (v: U, k: number) => TypedElement<T>, thisArg?: any): T;
 };
+*/
+export interface TypedArrayConstructor<T> {
+	readonly BYTES_PER_ELEMENT?: number;
+	new(length: number): TypedArray<T>;
+	new(array: ArrayLike<T>): TypedArray<T>;
+//	new<TArrayBuffer extends ArrayBufferLike = ArrayBuffer>(buffer: TArrayBuffer, byteOffset?: number, length?: number): TypedArray<T>;
+	new(buffer: ArrayBufferLike, byteOffset?: number, length?: number): TypedArray<T>;
+	new(elements: Iterable<T>): TypedArray<T>;
 
+	of(...items: T[]): TypedArray<T>;
+	from(array: ArrayLike<T>): TypedArray<T>;
+	from<U>(array: ArrayLike<U>, mapfn: (v: U, k: number) => T, thisArg?: any): TypedArray<T>;
+	from(elements: Iterable<T>): TypedArray<T>;
+	from<U>(elements: Iterable<U>, mapfn?: (v: U, k: number) => T, thisArg?: any): TypedArray<T>;
+};
 //export type ViewInstance<V> = V extends new(a: SharedArrayBuffer, o: number, l: number) => infer T ? T : never;
 
 // I am not happy about this, but I can't find a way to avoid ArrayBuffer without it
@@ -640,10 +208,10 @@ function TypedArray<R>(backingFactory: TypedArrayBackingFactory<R>, BYTES_PER_EL
 			return fromArray(items);
 		}
 
-	}) as any as TypedArrayConstructor<TypedArray<R>>;
+	}) as any as TypedArrayConstructor<R>;
 }
 
-function BitViewerTypedArray<D>(bits: number, viewer: BitViewer<D>): TypedArrayConstructor<TypedArray<D>> {
+function BitViewerTypedArray<D>(bits: number, viewer: BitViewer<D>): TypedArrayConstructor<D> {
 	if ((bits & 7) === 0) {
 		const bytes	= (bits + 7) >> 3;
 		return TypedArray((buffer: ArrayBufferLike, byteOffset: number, begin: number, length: number) => {
@@ -678,7 +246,7 @@ export function Int<N extends number>(bits: N, be?: boolean) {
 	return BitViewerTypedArray(bits, BitViewerSigned(bits, be));
 }
 
-export function BitFields<T extends BitFieldDescriptor>(bitfields: T, be = false) {
+export function BitFields<T extends Descriptor>(bitfields: T, be = false) {
 	const bits		= calcBits(bitfields);
 	const viewer	= BitFieldsViewer(bitfields, be, bits & 7 ? undefined : 0);
 	return BitViewerTypedArray(bits, viewer);
@@ -698,7 +266,7 @@ export function BitAdapterTypedArray<D>(adapter: BitAdapter<any, D>, be?: boolea
 type DataViewType = 'Uint8' | 'Int8' | 'Uint16' | 'Uint32' | 'BigUint64' | 'Int16' | 'Int32' | 'BigInt64' | 'Float32' | 'Float64';
 type DataViewReturnType<T extends DataViewType> = T extends 'BigUint64' ? bigint : T extends 'BigInt64' ? bigint : number;
 
-const typedArrays: Record<DataViewType, TypedArrayConstructor<TypedArray>> = {
+const typedArrays: Record<DataViewType, TypedArrayConstructor<any>> = {
 	Uint8: 		Uint8Array,
 	Int8: 		Int8Array,
 	Uint16: 	Uint16Array,
@@ -711,7 +279,7 @@ const typedArrays: Record<DataViewType, TypedArrayConstructor<TypedArray>> = {
 	Float64: 	Float64Array,
 } as const;
 
-function DataViewTypedArray<T extends DataViewType>(type: T, be?: boolean) {
+export function DataViewTypedArray<T extends DataViewType>(type: T, be?: boolean) {
 	const BYTES_PER_ELEMENT	= typedArrays[type].BYTES_PER_ELEMENT ?? 1;
 	return TypedArray(
 		(buffer: ArrayBufferLike, byteOffset: number, begin: number, length: number) => {
@@ -762,5 +330,5 @@ export function concatenate<T extends TypedArray>(buffers: T[]): T {
 		out8.set(new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength), offset);
 		offset += buf.byteLength;
 	}
-	return new (buffers[0].constructor as TypedArrayConstructor<T>)(out);
+	return new (buffers[0].constructor as new (out: ArrayBuffer)=>T)(out);
 }

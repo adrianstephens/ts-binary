@@ -1,4 +1,5 @@
 import * as float from '../dist/utilities/float';
+import * as bit from '../dist/bit';
 import * as bitfields from '../dist/utilities/bitfields';
 import * as typedArray from '../dist/utilities/typedArray';
 
@@ -100,12 +101,12 @@ for (let t = 0; t < 300; t++) {
 		expected[by] = b ? (expected[by] | m) : (expected[by] & ~m);
 	}
 
-	typedArray.putUintBits(new DataView(arr.buffer), offset, val, bits, le);
+	bit.putUint(new DataView(arr.buffer), offset, val, bits, le);
 	for (let i = 0; i < nbytes; i++)
 		if (arr[i] !== expected[i])
 			throw new Error(`putUintBits fail: le=${le} bits=${bits} offset=${offset}`);
 
-	const got = typedArray.getUintBits(new DataView(arr.buffer), offset, bits, le) >>> 0;
+	const got = bit.getUint(new DataView(arr.buffer), offset, bits, le) >>> 0;
 	let exp = 0;
 	for (let i = 0; i < bits; i++) {
 		const bi = offset + i;
@@ -137,12 +138,12 @@ for (let t = 0; t < 180; t++) {
 		expected[by] = b ? (expected[by] | m) : (expected[by] & ~m);
 	}
 
-	typedArray.putBigUintBits(new DataView(arr.buffer), offset, val, bits, le);
+	bit.putBigUint(new DataView(arr.buffer), offset, val, bits, le);
 	for (let i = 0; i < nbytes; i++)
 		if (arr[i] !== expected[i])
 			throw new Error(`putBigUintBits fail: le=${le} bits=${bits} offset=${offset}`);
 
-	const got = typedArray.getBigUintBits(new DataView(arr.buffer), offset, bits, le);
+	const got = bit.getBigUint(new DataView(arr.buffer), offset, bits, le);
 	let exp = 0n;
 	for (let i = 0; i < bits; i++) {
 		const bi = offset + i;

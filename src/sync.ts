@@ -11,41 +11,18 @@ export class _stream extends common_stream {
 	readonly kind = 'sync' as const;
 	atend?: (s: _stream) => void;
 
-	protected readonly offset0;
-
 	constructor(
 		private viewDelegate: viewDelegate,
-		protected offset = 0,
-		protected end?: number,
-		public be?: boolean,
-		public obj?: any
+		offset = 0,
+		end?: number,
+		be?: boolean,
+		obj?: any
 	) {
-		super();
-		this.offset0 = offset;
+		super(offset, offset, end, be, obj);
 	}
 
 	protected view_absolute<V extends ViewMaker<any>>(type: V, offset: number, len: number) {
 		return this.viewDelegate(type, offset, len);
-	}
-
-	get masterOffset()	{ return this.offset0; }
-
-	tell() {
-		return this.offset - this.offset0;
-	}
-	seek(offset: number) {
-		this.offset = offset + this.offset0;
-	}
-	skip(len: number) {
-		this.offset += len;
-	}
-	align(align: number) {
-		const misalign = this.tell() % align;
-		if (misalign)
-			this.skip(align - misalign);
-	}
-	remaining() {
-		return this.end === undefined ? undefined : this.end - this.tell();
 	}
 
 	view<V extends ViewMaker<any>>(type: V, len: number, strict = true) {
@@ -75,7 +52,6 @@ export class _stream extends common_stream {
 		return new type(this.viewDelegate, this.offset0 + offset, size, this.be, this.obj);
 	}
 
-	
 	remainder() {
 		const remaining = this.end !== undefined ? this.end - this.tell() : 0;
 		return this.view(Uint8Array, remaining, false);

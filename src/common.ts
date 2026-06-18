@@ -1,4 +1,9 @@
 
+export type UnionToIntersection<U> = (U extends any ? (x: U) => void : never) extends (x: infer I) => void ? I : never;
+export type NoPromise<T> = T extends PromiseLike<infer R> ? R : T;
+export type MaybePromise<T> = T | Promise<T>;
+export type MaybePromise2<T, A extends boolean> = A extends true ? Promise<T> : T;
+
 export type UpTo8 = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8;
 export type UpTo16 = UpTo8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16;
 export type UpTo32 = UpTo16 | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32;
@@ -29,11 +34,15 @@ export type IsPow2<V> = V extends bigint ? (`${V}` extends `${infer N}n` ? N ext
 //	bit stuff
 //-----------------------------------------------------------------------------
 
-export function isPow2(n: number) {
-	return (n & (n - 1)) === 0;
-}
-export function contiguousBits(n: number) {
-	return isPow2(n + lowestSet(n));
+export const isLittleEndian = (new Uint8Array(new Uint16Array([0x1234]).buffer))[0] === 0x34;
+
+export function isPow2(n: number): boolean;
+export function isPow2(n: bigint): boolean;
+export function isPow2(n: number|bigint): boolean;
+export function isPow2(n: number|bigint) {
+	return typeof n === 'bigint'
+		? (n & (n - 1n)) === 0n
+		: (n & (n - 1)) === 0;
 }
 
 export function nextPow2(n: number): number;
@@ -90,15 +99,6 @@ export function highestSetIndex(n: number | bigint): number {
 
 export function lowestSetIndex(n: number | bigint): number {
 	return highestSetIndex(lowestSet(n));
-}
-
-export function clearLowest(n: number): number;
-export function clearLowest(n: bigint): bigint;
-export function clearLowest(n: number | bigint): number | bigint;
-export function clearLowest(n: number | bigint)	{
-	return typeof n === 'bigint'
-		? n & (n - 1n)
-		: n & (n - 1);
 }
 
 export function bitCount(x: number | bigint): number {
@@ -165,15 +165,137 @@ export function bitReverse<N extends number>(x: number | bigint, bits: N): N ext
 	}
 }
 
-export function toSigned(n: number, bits: number) {
-	const m = 1 << (bits - 1);
-	return (n & (m - 1)) - (n & m);
-}
-export function toSignedBig(n: bigint, bits: number) {
-	const m = 1n << BigInt(bits - 1);
-	return (n & (m - 1n)) - (n & m);
+export function clearLowest(n: number): number;
+export function clearLowest(n: bigint): bigint;
+export function clearLowest(n: number | bigint): number | bigint;
+export function clearLowest(n: number | bigint)	{
+	return typeof n === 'bigint'
+		? n & (n - 1n)
+		: n & (n - 1);
 }
 
+export function toSigned(n: number, bits: number): number;
+export function toSigned(n: bigint, bits: number): bigint;
+export function toSigned(n: number | bigint, bits: number): number | bigint;
+export function toSigned(n: number | bigint, bits: number) {
+	if (typeof n === 'bigint') {
+		const m = 1n << BigInt(bits - 1);
+		return (n & (m - 1n)) - (n & m);
+	} else {
+		const m = 1 << (bits - 1);
+		return (n & (m - 1)) - (n & m);
+	}
+}
+
+export function divBig(a: bigint, b: bigint) {
+	if (b === 0n)
+		return Infinity;
+	if (a === 0n)
+		return 0;
+
+	const aa = a < 0n ? -a : a;
+	const bb = b < 0n ? -b : b;
+
+	// If both fit in safe integer range, do the fast exact conversion
+	const MAX_SAFE = BigInt(Number.MAX_SAFE_INTEGER);
+	if (aa <= MAX_SAFE && bb <= MAX_SAFE)
+		return Number(a) / Number(b);
+
+	const shiftA = Math.max(0, highestSetIndex(aa) - 52);
+	const shiftB = Math.max(0, highestSetIndex(bb) - 52);
+	const result = Number(aa >> BigInt(shiftA)) / Number(bb >> BigInt(shiftB)) * Math.pow(2, shiftA - shiftB);
+	return (a < 0n) !== (b < 0n) ? -result : result;
+}
+
+
+//-----------------------------------------------------------------------------
+//	integers
+//-----------------------------------------------------------------------------
+
+// get/put 1-7 byte integers from/to DataView (truncates to 52 bits)
+
+export function getUint(dv: DataView, offset: number, len: number, littleEndian?: boolean) {
+	let result = 0;
+	if (littleEndian) {
+		if (len & 1)
+			result = dv.getUint8(offset + (len & 6));
+		if (len & 2)
+			result = (result << 16) | dv.getUint16(offset + (len & 4), true);
+		if (len & 4)
+			result = (result & 0x0fffff) * (2**32) + dv.getUint32(offset, true);
+	} else {
+		if (len & 1)
+			result = dv.getUint8(offset);
+		if (len & 2)
+			result = (result << 16) | dv.getUint16(offset + (len & 1), false);
+		if (len & 4)
+			result = (result & 0x0fffff) * (2**32) + dv.getUint32(offset + (len & 3), false);
+	}
+	return result;
+}
+
+export function putUint(dv: DataView, offset: number, v: number, len: number, littleEndian?: boolean) {
+	if (littleEndian) {
+		if (len & 4) {
+			dv.setUint32(offset, v & 0xffffffff, true);
+			v = Math.floor(v / 2**32);
+		}
+		if (len & 2) {
+			dv.setUint16(offset + (len & 4), v & 0xffff, true);
+			v >>= 16;
+		}
+		if (len & 1)
+			dv.setUint8(offset + (len & 6), v & 0xff);
+	} else {
+		if (len & 4) {
+			dv.setUint32(offset + (len & 3), v & 0xffffffff);
+			v = Math.floor(v / 2**32);
+		}
+		if (len & 2) {
+			dv.setUint16(offset + (len & 1), v & 0xffff);
+			v >>= 16;
+		}
+		if (len & 1)
+			dv.setUint8(offset, v & 0xff);
+	}
+}
+
+export function getBigUint(dv: DataView, offset: number, len: number, littleEndian?: boolean) {
+	let result = 0n;
+	if (littleEndian) {
+		while (len >= 7) {
+			len -= 4;
+			result = (result << 32n) | BigInt(dv.getUint32(offset + len, true));
+		}
+		return (result << BigInt(len * 8)) + BigInt(getUint(dv, offset, len, true));
+	} else {
+		const end = offset + len;
+		while (offset + 7 <= end) {
+			result = (result << 32n) | BigInt(dv.getUint32(offset));
+			offset += 4;
+		}
+		return (result << BigInt((end - offset) * 8)) + BigInt(getUint(dv, offset, end - offset));
+	}
+}
+
+export function putBigUint(dv: DataView, offset: number, v: bigint, len: number, littleEndian?: boolean) {
+	if (littleEndian) {
+		const end = offset + len;
+		while (offset + 7 <= end) {
+			dv.setUint32(offset, Number(v & 0xffffffffn), true);
+			v >>= 32n;
+			offset += 4;
+		}
+		putUint(dv, offset, Number(v), end - offset, true);
+	} else {
+		while (len >= 7) {
+			len -= 4;
+			dv.setUint32(offset + len, Number(v & 0xffffffffn));
+			v >>= 32n;
+		}
+		putUint(dv, offset, Number(v), len, false);
+	}
+}
 
 //-----------------------------------------------------------------------------
 //	Decompression
@@ -216,7 +338,7 @@ export function compress(name: string): Codec {
 // adapter
 //-----------------------------------------------------------------------------
 
-export interface Adapter<T, D> {
+export interface SimpleAdapter<T, D> {
 	to(x: T):	D;
 	from(x: D):	T;
 }
@@ -225,7 +347,7 @@ export interface MutableArrayLike<T> {
     readonly length: number;
     [n: number]: T;
 }
-export function AdaptArray<T, D>(array: MutableArrayLike<T>, adapter: Adapter<T, D>): MutableArrayLike<D> {
+export function AdaptArray<T, D>(array: MutableArrayLike<T>, adapter: SimpleAdapter<T, D>): MutableArrayLike<D> {
 	return new Proxy(array, {
 		get(target, prop) {
 			if (prop === 'length')
@@ -354,44 +476,58 @@ export function merge(obj: any, value: any, k?: string) {
 //-----------------------------------------------------------------------------
 
 export abstract class common_stream {
-	obj?:	any;
-	abstract tell(): number;
-	abstract seek(offset: number): void;
-	pushObj(obj?: any)							{ return pushObj(this, obj);}
-	popObj<T extends object>(obj: T = this.obj)	{ return popObj(this, obj); }
-	lookupObj<T>(key: string, def?: T)			{ return lookupObj(this, key, def); }
-}
+	constructor(
+		protected readonly offset0: number,
+		protected offset = 0,
+		protected end?: number,
+		public be?: boolean,
+		public obj?: any
+	) {}
+	get masterOffset()	{ return this.offset0; }
 
-function pushObj(s: common_stream, obj?: any) {
-	if (!obj)
-		obj = {obj: s.obj} as any;
-	else
-		obj.obj = s.obj;
-	s.obj = obj;
-	return obj;
-}
-function popObj<T extends object>(s: common_stream, obj: T = s.obj) {
-	s.obj = (obj as any).obj;
-	delete (obj as any).obj;
-	return obj;
-}
-
-function lookupObj<T>(s: common_stream, key: string, def?: T) : T | undefined {
-	for (let obj = s.obj; obj; obj = obj.obj) {
-		if (key in obj)
-			return obj[key];
+	tell() {
+		return this.offset - this.offset0;
 	}
-	return def;
+	seek(offset: number) {
+		this.offset = offset + this.offset0;
+	}
+	skip(len: number) {
+		this.offset += len;
+	}
+	align(align: number) {
+		const misalign = this.tell() % align;
+		if (misalign)
+			this.skip(align - misalign);
+	}
+	remaining() {
+		return this.end === undefined ? undefined : this.end - this.tell();
+	}
+
+	pushObj(obj?: any) {
+		if (!obj)
+			obj = {obj: this.obj} as any;
+		else
+			obj.obj = this.obj;
+		this.obj = obj;
+		return obj;
+	}
+	popObj<T extends object>(obj: T = this.obj)	{
+		this.obj = (obj as any).obj;
+		delete (obj as any).obj;
+		return obj;
+	}
+	lookupObj<T>(key: string, def?: T) {
+		for (let obj = this.obj; obj; obj = obj.obj) {
+			if (key in obj)
+				return obj[key];
+		}
+		return def;
+	}
 }
 
 //-----------------------------------------------------------------------------
-//	types
+//	ReadType
 //-----------------------------------------------------------------------------
-
-export type UnionToIntersection<U> = (U extends any ? (x: U) => void : never) extends (x: infer I) => void ? I : never;
-export type NoPromise<T> = T extends PromiseLike<infer R> ? R : T;
-export type MaybePromise<T> = T | Promise<T>;
-export type MaybePromise2<T, A extends boolean> = A extends true ? Promise<T> : T;
 
 export interface MergeBase<T> { merge: T; }
 export interface MergeType<T> extends MergeBase<T> { readonly correlated: false; }
@@ -431,7 +567,7 @@ type MergeResult<A, B> = {[K in keyof A]: K extends keyof B ? MergeOverlap<A[K],
 	& {[K in Exclude<keyof B, keyof A> as undefined extends B[K] ? K : never]?: B[K]}
 	& {[K in Exclude<keyof B, keyof A> as undefined extends B[K] ? never : K]: B[K]};
 
-export type ReadType<T> = T extends {new (s: infer _S extends common_stream): infer R} ? R
+export type ReadType<T> = T extends {new (s: any): infer R} ? R
 	: T extends { get: (s: any) => infer R } ? NoPromise<R>
 	: T extends readonly unknown[] ? TupleReadType<T>
 	: T extends object ? (

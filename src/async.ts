@@ -11,41 +11,18 @@ export class _stream extends common_stream {
 	readonly kind = 'async' as const;
 	atend?: (s: _stream) => Promise<void>;
 
-	protected readonly offset0;
-
 	constructor(
 		private viewDelegate: viewDelegate,
-		protected offset = 0,
-		protected end?: number,
-		public be?: boolean,
-		public obj?: any
+		offset = 0,
+		end?: number,
+		be?: boolean,
+		obj?: any
 	) {
-		super();
-		this.offset0 = offset;
+		super(offset, offset, end, be, obj);
 	}
 
 	protected view_absolute<V extends ViewMaker<any>>(type: V, offset: number, len: number) {
 		return this.viewDelegate(type, offset, len);
-	}
-
-	get masterOffset()	{ return this.offset0; }
-
-	tell() {
-		return this.offset - this.offset0;
-	}
-	seek(offset: number) {
-		this.offset = offset + this.offset0;
-	}
-	skip(len: number) {
-		this.offset += len;
-	}
-	align(align: number) {
-		const misalign = this.tell() % align;
-		if (misalign)
-			this.skip(align - misalign);
-	}
-	remaining() {
-		return this.end === undefined ? undefined : this.end - this.tell();
 	}
 
 	view<V extends ViewMaker<any>>(type: V, len: number, strict = true) {
@@ -95,8 +72,8 @@ export class _stream extends common_stream {
 	async peek(len: number) {
 		return this.view_at(Uint8Array, this.tell(), len);
 	}
-	read<T extends TypeReader>(spec: T): ReadType<T>;
-	read<T extends TypeReader, U extends object>(spec: T, obj: U) : ReadType<T> & U;
+	read<T extends TypeReader>(spec: T): Promise<ReadType<T>>;
+	read<T extends TypeReader, U extends object>(spec: T, obj: U) : Promise<ReadType<T> & U>;
 	read<T extends TypeReader>(spec: T, obj?: any) {
 		if (obj) {
 			this.obj = obj;

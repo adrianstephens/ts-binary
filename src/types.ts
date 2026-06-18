@@ -2,11 +2,25 @@ import * as text from './utilities/text';
 import {Float as float} from './utilities/float';
 import * as async from './async';
 import * as sync from './sync';
-import { UnionToIntersection, MaybePromise, ReadType, MergeType, CorrelatedMerge, after, tryAfter, merge, highestSetIndex, toSigned, toSignedBig, KMP } from './common';
-import { TypedArray, ViewMaker, ViewInstance, getUint, putUint, getBigUint, putBigUint, getBigUintBits, putBigUintBits } from './utilities/typedArray';
-import { BitFieldDescriptor, BitFields as BitFields0 } from './utilities/bitfields';
+import * as bit from './bit';
+import { UnionToIntersection, MaybePromise, ReadType, MergeType, CorrelatedMerge, after, tryAfter, merge, highestSetIndex, toSigned, KMP, getUint, putUint, getBigUint, putBigUint } from './common';
+import { TypedArray, ViewMaker, ViewInstance } from './utilities/typedArray';
+import { Descriptor, BitFields as BitFields0 } from './utilities/bitfields';
 import { _stream, measure } from './sync';
-import { get, put, TypeT, TypeX, Type, read, read_merge, readn, write, write_merge, writen, makex, isReader } from './interop';
+import { get, put, TypeT, TypeX, Type, read, read_merge, readn, write, write_merge, writen, makex, isReader, _stream as inter_stream } from './interop';
+
+function CountMatchingFields(keys: Set<string>, spec: any) {
+	return Object.keys(spec).reduce((acc, key) => acc + (keys.has(key) ? 1 : 0), 0);
+}
+
+function Discriminator<K extends string | number, T extends Record<K, any>>(value: any, switches: T): K | undefined {
+	if (typeof value === 'object') {
+		const keys = new Set(Object.keys(value));
+		const counts = Object.values(switches).map((spec: any) => CountMatchingFields(keys, spec));
+		return Object.keys(switches)[counts.reduce((best, n, i) => n > counts[best] ? i : best, 0)] as K;
+	}
+}
+
 
 //-----------------------------------------------------------------------------
 //	non-reading types (don't need async)
@@ -61,20 +75,24 @@ export function SyncFunc<T>(func: (s: _stream, v?: T)=>T): sync.TypeT<T> {
 	};
 }
 
+export function SyncFuncType<T extends sync.Type>(func: (s: _stream, v?: T)=>T): sync.TypeT<ReadType<T>>;
+export function SyncFuncType<T extends sync.Type | undefined>(func: (s: _stream, v?: T)=>T): sync.TypeT<ReadType<T> | undefined> {
+	return {
+		get: s => { const t = func(s); if (t !== undefined) return read(s, t); },
+		put: (s, v) => { const t = func(s, v); return t && write(s, t, v); }
+	};
+}
+
+//-----------------------------------------------------------------------------
+//	other meta types
+//-----------------------------------------------------------------------------
+
 export function Func<T>(func: (s: _stream, v?: T)=>T): sync.TypeT<T>;
 export function Func<T>(func: (s: _stream|async._stream, v?: T)=>MaybePromise<T>): TypeT<T>;
 export function Func(func: (s: any, v?: any)=>any) {
 	return {
 		get: (s: any) => func(s),
 		put: (s: any, v: any) => func(s, v)
-	};
-}
-
-export function SyncFuncType<T extends sync.Type>(func: (s: _stream, v?: T)=>T): sync.TypeT<ReadType<T>>;
-export function SyncFuncType<T extends sync.Type | undefined>(func: (s: _stream, v?: T)=>T): sync.TypeT<ReadType<T> | undefined> {
-	return {
-		get: s => { const t = func(s); if (t !== undefined) return read(s, t); },
-		put: (s, v) => { const t = func(s, v); return t && write(s, t, v); }
 	};
 }
 
@@ -95,6 +113,13 @@ export function Discard(type: Type): TypeT<undefined> {
 	};
 }
 
+export function ReadOnly<T extends Type>(spec: T): TypeT<ReadType<T>> {
+	return {
+		get:(s => read(s, spec)) as get<ReadType<T>>,
+		put:((_s, _v) => undefined) as put<ReadType<T>>
+	};
+}
+
 export function Expect<T extends Type>(type: T, t: ReadType<T>): TypeT<undefined> {
 	const compare: (x: ReadType<T>) => boolean = typeof t !== 'object'
 		? x => x === t
@@ -108,6 +133,7 @@ export function Expect<T extends Type>(type: T, t: ReadType<T>): TypeT<undefined
 		put: (s => write(s, type, t)) as put<undefined>
 	};
 }
+
 export function Struct<T extends Type>(spec: T): TypeT<ReadType<T>> {
 	return {
 		get:(s => read(s, spec)) as get<ReadType<T>>,
@@ -115,10 +141,15 @@ export function Struct<T extends Type>(spec: T): TypeT<ReadType<T>> {
 	};
 }
 
-export function ReadOnly<T extends Type>(spec: T): TypeT<ReadType<T>> {
+export function Merge<T extends Type>(type: T): TypeT<MergeType<ReadType<T>>> {
+	type R = MergeType<ReadType<T>>;
 	return {
-		get:(s => read(s, spec)) as get<ReadType<T>>,
-		put:((_s, _v) => undefined) as put<ReadType<T>>
+		get: (s => after(read(s, type), value => {
+			if (value && typeof value === 'object')
+				Object.assign(s.obj, value);
+			return {} as R;
+		})) as get<R>,
+		put: ((s, v) => write(s, type, s.obj)) as put<R>
 	};
 }
 
@@ -223,12 +254,12 @@ export function UINT<N extends number>(bits: N | TypeX<number>, be?: boolean): T
 			get: (
 				s		=> after(x.get(s),
 				bits	=> after(s.view(DataView, (bits + 7) >> 3),
-				dv		=> getBigUintBits(dv, 0, bits, !be)
+				dv		=> bit.getBigUint(dv, 0, bits, !be)
 			))) as get<number|bigint>,
 			put: (
 				(s, v)	=> after(x.put(s, highestSetIndex(v)),
 				bits	=> after(s.view(DataView, (bits + 7) >> 3),
-				dv		=> putBigUintBits(dv, 0, BigInt(v), bits, !be)
+				dv		=> bit.putBigUint(dv, 0, BigInt(v), bits, !be)
 			))) as put<number|bigint>
 		}), be) as TypeNumber2<N>;
 	}
@@ -242,7 +273,7 @@ export function INT<N extends number>(bits: N | TypeX<number>, be?: boolean): Ty
 		return (bits === 8 ? UINT8
 			: bits > 56
 			? endian((be?: boolean) => ({
-				get: (s => after(s.view(DataView, bits / 8), dv => toSignedBig(getBigUint(dv, 0, bits / 8, !be), bits))) as get<bigint>,
+				get: (s => after(s.view(DataView, bits / 8), dv => toSigned(getBigUint(dv, 0, bits / 8, !be), bits))) as get<bigint>,
 				put: ((s, v) => after(s.view(DataView, bits / 8), dv => putBigUint(dv, 0, v, bits / 8, !be))) as put<bigint>
 			}), be)
 			: endian(bits == 16 ? _INT16 : bits == 32 ? _INT32 :
@@ -257,12 +288,12 @@ export function INT<N extends number>(bits: N | TypeX<number>, be?: boolean): Ty
 			get: (
 				s		=> after(x.get(s),
 				bits	=> after(s.view(DataView, (bits + 7) >> 3),
-				dv		=> toSignedBig(getBigUintBits(dv, 0, bits, !be), bits)
+				dv		=> toSigned(bit.getBigUint(dv, 0, bits, !be), bits)
 			))) as get<number|bigint>,
 			put: (
 				(s, v)	=> after(x.put(s, highestSetIndex(v < 0 ? -v : v)),
 				bits	=> after(s.view(DataView, (bits + 7) >> 3),
-				dv		=> putBigUintBits(dv, 0, BigInt(v), bits, !be)
+				dv		=> bit.putBigUint(dv, 0, BigInt(v), bits, !be)
 			))) as put<number|bigint>
 		}), be) as TypeNumber2<N>;
 	
@@ -286,12 +317,12 @@ export function Float(mbits: number, ebits: number, ebias = (1 << (ebits - 1)) -
 		return endian(_Float64, be);
 	if (sbit && mbits === 23 && ebits === 8 && ebias === 127)
 		return endian(_Float32, be);
-	const F = float(mbits, ebits, ebias, sbit);
+	const F = float(mbits, ebits, {ebias, sbit});
 	return as(UINT(F.bits, be), x => +F.to(x), y => F(y).raw as any);
 }
 
 export function FloatRaw(mbits: number, ebits: number, ebias = (1 << (ebits - 1)) - 1, sbit = true, be?: boolean)	{
-	const F = float(mbits, ebits, ebias, sbit);
+	const F = float(mbits, ebits, {ebias, sbit});
 	return as(UINT(F.bits, be), x => F.to(x), y => F(+y).raw as any);
 }
 export const Float16	= Float(10, 5, 15, true), Float16_LE = Float(10, 5, 15, true, false), Float16_BE = Float(10, 5, 15, true, true);
@@ -664,11 +695,8 @@ export function StructT<T>(spec: SpecT2<T>): TypeT<T> {
 	};
 }
 
-function CountMatchingFields(keys: Set<string>, spec: any) {
-	return Object.keys(spec).reduce((acc, key) => acc + (keys.has(key) ? 1 : 0), 0);
-}
 
-export function OptionalDiscriminator<T, F>(value: any, true_type: T, false_type: F) {
+function OptionalDiscriminator<T, F>(value: any, true_type: T, false_type: F) {
 	const true_obj = typeof true_type === 'object';
 	const false_obj = typeof false_type === 'object';
 
@@ -681,7 +709,7 @@ export function OptionalDiscriminator<T, F>(value: any, true_type: T, false_type
 }
 
 export function Optional<T extends Type, F extends Type | undefined = undefined>(test: TypeX<boolean | number>, type: T, false_type?: F, discriminator = (value: any) => OptionalDiscriminator(value, type, false_type)) {
-	type R = F extends Type ? ReadType<T | F> : ReadType<T | undefined>;
+	type R = F extends Type ? ReadType<T | F> : ReadType<T> | undefined;
 	const x = makex(test, discriminator);
 	return {
 		get: (s => after(x.get(s), x => {
@@ -752,14 +780,6 @@ export function Try<T extends Record<string, Type>>(type: T) {
 	} as TypeT<R>;
 }
 
-export function Discriminator<K extends string | number, T extends Record<K, any>>(value: any, switches: T): K | undefined {
-	if (typeof value === 'object') {
-		const keys = new Set(Object.keys(value));
-		const counts = Object.values(switches).map((spec: any) => CountMatchingFields(keys, spec));
-		return Object.keys(switches)[counts.reduce((best, n, i) => n > counts[best] ? i : best, 0)] as K;
-	}
-}
-
 function IfDiscriminator<T, F>(value: any, true_type: T, false_type: F) {
 	const result = Discriminator(value, { true: true_type, false: false_type } as any);
 	return result === 'true' ? true : result === 'false' ? false : undefined;
@@ -780,14 +800,42 @@ export function If<T extends Type, F extends Type | undefined = undefined>(test:
 	} as TypeT<MergeType<R>>;
 }
 
+class SwitchClass<K extends string | number, T extends Record<K, Type>> implements TypeT<ReadType<T[keyof T]>> {
+	x;
+	constructor(test: TypeX<K>, public switches: T, discriminator?: (value: any) => K) {
+		this.x = makex(test, discriminator ?? (value => Discriminator(value, switches)));
+	}
+	lookup(x: any) {
+		return this.switches[x as keyof T] ?? (this.switches as any).default;
+	}
+
+	get(s: _stream): ReadType<T[keyof T]>;
+	get(s: async._stream): Promise<ReadType<T[keyof T]>>;
+	get(s: any): MaybePromise<ReadType<T[keyof T]>> {
+		return after(this.x.get(s), key => {
+			const t = this.lookup(key);
+			return t && read(s, t);
+		});
+	}
+	put(s: _stream, v: any): void;
+	put(s: async._stream, v: any): Promise<void>;
+	put(s: inter_stream, v: any): MaybePromise<void> {
+		return after(this.x.put(s, v),
+			key => {
+				const t = this.lookup(key);
+				return t ? write(s, t, v) : undefined;
+			}
+		);
+	}
+}
 
 type DiscrimSwitch<KName extends string, T extends Record<string | number, any>> = {
 	[J in keyof T & (string | number)]: {[K in KName]: J} & ReadType<T[J]>
 }[keyof T & (string | number)];
 
 export function Switch<KName extends string, K extends string | number, T extends Record<K, Type>>(test: KName, switches: T) : TypeT<CorrelatedMerge<DiscrimSwitch<KName, T>>>;
-export function Switch<K extends string | number, T extends Record<K, Type>>(test: TypeX<K>, switches: T) : TypeT<ReadType<T[keyof T]>>;
-export function Switch<KName extends string, K extends string | number, T extends Record<K, Type>>(test: TypeX<K>, switches: T, discriminator = (value: any) => Discriminator(value, switches as any) as K) {
+export function Switch<K extends string | number, T extends Record<K, Type>>(test: TypeX<K>, switches: T, discriminator?: (value: any) => K) : TypeT<ReadType<T[keyof T]>>;
+export function Switch<KName extends string, K extends string | number, T extends Record<K, Type>>(test: TypeX<K>, switches: T, discriminator?: (value: any) => K) {
 	const lookup = (x: any) => switches[x as keyof T] ?? (switches as any).default;
 
 	if (typeof test === 'string') {
@@ -805,8 +853,9 @@ export function Switch<KName extends string, K extends string | number, T extend
 		};
 
 	} else {
-		type R = ReadType<T[keyof T]>;
-		const x = makex(test, discriminator);
+		return new SwitchClass<K, T>(test, switches, discriminator) as TypeT<ReadType<T[keyof T]>>;
+/*		type R = ReadType<T[keyof T]>;
+		const x = makex(test, discriminator ?? (value => Discriminator(value, switches)));
 		return {
 			get: (s => after(x.get(s), key => {
 				const t = lookup(key);
@@ -821,52 +870,36 @@ export function Switch<KName extends string, K extends string | number, T extend
 				);
 			}) as put<R>
 		};
+		*/
 	}
 }
 
-export interface DeferedType<T> {
-	get(): MaybePromise<T>;
-}
-
-export function resolved<T>(value: Promise<T>): DeferedType<T>;
-export function resolved<T>(value: T): DeferedType<T>;
-export function resolved(value: any) {
-	return { get: () => value };
-}
-
-export function Defered<T extends Type>(type: T): TypeT<DeferedType<ReadType<T>>> {
-	return {
-		get: (s => {
-			const obj = s.obj;
-			let cached: MaybePromise<ReadType<T>> | undefined;
-
-			return { get: () => {
-				if (!cached) {
-					s.obj = obj;
-					cached = read(s, type);
+function SplitRepeat<T>(value: Repeated<ReadType<T>>, type: T): ReadType<T>[] {
+	if (type instanceof SwitchClass) {
+		const switches = type.switches;
+		const result = [];
+		if (value && typeof value === 'object') {
+			const keys = new Set(Object.keys(value));
+			for (const spec of Object.values(switches)) {
+				const m = CountMatchingFields(keys, spec);
+				if (m) {
+					const fields = Object.keys(spec as any).filter(f => f in value);
+					result.push(Object.fromEntries(fields.map(f => [f, (value as any)[f]])));
 				}
-				return cached;
-			}};
-			
-		}) as get<DeferedType<ReadType<T>>>,
-		put: ((s, v) => after(v.get(), v => write(s, type, v))) as put<DeferedType<ReadType<T>>>
-	};
+			}
+			if (result.length)
+				return result as any;
+		}
+	}
+	
+	return [value as any];
 }
 
-export function Merge<T extends Type>(type: T): TypeT<MergeType<ReadType<T>>> {
-	type R = MergeType<ReadType<T>>;
-	return {
-		get: (s => after(read(s, type), value => {
-			if (value && typeof value === 'object')
-				Object.assign(s.obj, value);
-			return {} as R;
-		})) as get<R>,
-		put: ((s, v) => write(s, type, v as ReadType<T>)) as put<R>
-	};
-}
+type Repeated<T> = Partial<UnionToIntersection<NonNullable<T>>>;
 
-export function Repeat<T extends Type>(len: TypeX<number>, type: T, split = (v: ReadType<T>) => [v]) {
-	type R = MergeType<Partial<ReadType<T>>>;
+export function Repeat<T extends Type>(len: TypeX<number>, type: T, split = (_s: any, v: Repeated<ReadType<T>>) => SplitRepeat(v, type)) {
+	//type R = MergeType<Partial<ReadType<T>>>;
+	type R = Repeated<ReadType<T>>;
 	const x = makex(len);
 	return {
 		get: (s => after(x.get(s), n => {
@@ -877,15 +910,15 @@ export function Repeat<T extends Type>(len: TypeX<number>, type: T, split = (v: 
 			return after(acc, () => s.popObj());
 		})) as get<R>,
 		put: ((s, v) => {
-			const vs = split(v as ReadType<T>);
+			const vs = split(s, v as ReadType<T>);
 			return after(x.put(s, vs.length), () => writen(s, type, vs));
 		}) as put<R>
 	};
 }
 
-export function RemainingRepeat<T extends Type>(type: T, split = (s: any, v: ReadType<T>) => [v]) {
+export function RemainingRepeat<T extends Type>(type: T, split = (_s: any, v: Repeated<ReadType<T>>) => SplitRepeat(v, type)) {
 	//type R = MergeType<Partial<ReadType<T>>>;
-	type R = Partial<UnionToIntersection<NonNullable<ReadType<T>>>>;
+	type R = Repeated<ReadType<T>>;
 	return {
 		get: (s => {
 			s.pushObj();
@@ -916,12 +949,45 @@ export function RemainingRepeat<T extends Type>(type: T, split = (s: any, v: Rea
 }
 
 //-----------------------------------------------------------------------------
+//	Defered
+//-----------------------------------------------------------------------------
+
+export interface DeferedType<T> {
+	get(): MaybePromise<T>;
+}
+
+export function resolved<T>(value: Promise<T>): DeferedType<T>;
+export function resolved<T>(value: T): DeferedType<T>;
+export function resolved(value: any) {
+	return { get: () => value };
+}
+
+export function Defered<T extends Type>(type: T): TypeT<DeferedType<ReadType<T>>> {
+	return {
+		get: (s => {
+			const obj = s.obj;
+			let cached: MaybePromise<ReadType<T>> | undefined;
+
+			return { get: () => {
+				if (!cached) {
+					s.obj = obj;
+					cached = read(s, type);
+				}
+				return cached;
+			}};
+			
+		}) as get<DeferedType<ReadType<T>>>,
+		put: ((s, v) => after(v.get(), v => write(s, type, v))) as put<DeferedType<ReadType<T>>>
+	};
+}
+
+//-----------------------------------------------------------------------------
 //	AS - read as one type, return another
 //-----------------------------------------------------------------------------
 
 interface adapter0<T, D, O=void> {
-	to(x: T, opt: O): MaybePromise<D>;
-	from(x: D, opt: O): MaybePromise<T>;
+	to(x: T, opt: O):	MaybePromise<D>;
+	from(x: D, opt: O):	MaybePromise<T>;
 }
 type adapter1<T, D, O=void> = (new (x: T, opt: O) => D) | ((x: T, opt: O) => MaybePromise<D>);
 
@@ -951,20 +1017,8 @@ export function as<D>(type: Type, maker: adapter<any, D, _stream|async._stream>,
 		put: ((s, v) => write(s, type, unmake(v, s))) as put<D>
 	};
 }
-/*
-export function BitFields<D>(bitfields: utils.BitAdapter<any, D>, be?: boolean) : TypeT<D>;
-export function BitFields<T extends Record<string, utils.BitAdapterN<any, any> | number>>(bitfields: T, be?: boolean): TypeT<utils.BitOutput<T>>;
-export function BitFields(bitfields: any, be?: boolean): TypeT<any> {
-	be = be ?? false;
-	if (typeof bitfields.get !== 'function') {
-		const total	= Object.values(bitfields).reduce((sum, bf: any) => sum + (typeof bf === 'number' ? bf : bf.bits), 0) as number;
-		bitfields = utils.BitFields(total, bitfields);
-	}
-	return as(UINT(bitfields.bits, be), bitfields);
-}
-*/
 
-export function BitFields<T extends BitFieldDescriptor>(bitfields: T, be?: boolean) {
+export function BitFields<T extends Descriptor>(bitfields: T, be?: boolean) {
 	const bitfields2 = BitFields0(0, bitfields);
 	return as(UINT(bitfields2.bits, be), bitfields2);
 }

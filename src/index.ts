@@ -1,7 +1,6 @@
 export * from './sync';
 export * from './types';
 export * from './common';
-export { BitField } from './utilities/bitfields';
 export * as async from './async';
 export * as interop from './interop';
 export { ReadClass, Class, Extend } from './interop';
@@ -10,12 +9,17 @@ export * as bit from './bit';
 export * as bitfields from './utilities/bitfields';
 export * as text from './utilities/text';
 export { CRC as crc } from './utilities/crc';
-export { Float as float } from './utilities/float';
+export { Float as float, float4, float8e4m3, float8e5m2, float16, Bfloat16, float32, float64, float128 } from './utilities/float';
 export * as typedArray from './utilities/typedArray';
 
-import { ReadType, IsPow2, isPow2, lowestSet } from './common';
+import { SimpleAdapter, ReadType, IsPow2, isPow2, lowestSet, divBig } from './common';
 import { as } from './types';
 import * as interop from './interop';
+import { BitInput, BitAdapterN } from './utilities/bitfields';
+
+export function BitField<N extends number, T>(bits: N, adapter: SimpleAdapter<BitInput<N>, T>): BitAdapterN<N, T> {
+	return { bits, ...adapter};
+}
 
 //-----------------------------------------------------------------------------
 // apply names to array elements
@@ -40,14 +44,23 @@ export function objectWithNames<T extends interop.Type>(type: T, func:(v: any, i
 // hold numbers as hex
 //-----------------------------------------------------------------------------
 
+function withToString<T>(toString: (t: T)=>string) {
+	return class {
+		constructor(public value: T) {}
+		valueOf()	{ return this.value; }
+		toString()	{ return toString(this.value); }
+	};
+};
+
+/*
 export class hex<T extends number | bigint> {
 	constructor(public value: T) {}
 	valueOf()	{ return this.value; }
 	toString()	{ return '0x' + this.value.toString(16); }
 };
-
-export function asHex(type: interop.TypeT<number> | interop.TypeT<bigint> | interop.TypeT<number|bigint>): interop.TypeT<hex<number|bigint>> {
-	return as(type, hex);// as interop.TypeT<hex<number|bigint>>;
+*/
+export function asHex(type: interop.TypeT<number> | interop.TypeT<bigint> | interop.TypeT<number|bigint>) {
+	return as(type, withToString((x: number|bigint) => '0x' + x.toString(16)));
 }
 
 //-----------------------------------------------------------------------------
@@ -73,7 +86,7 @@ export function asScaled<T extends number|bigint>(type: interop.TypeT<T>, scale:
 			const x = BigInt(_x);
 			return {
 				x,
-				valueOf: () => Number(x) / Number(scale),
+				valueOf: () => divBig(x, scale),
 				toString: () => {
 					const a		= x < 0n ? -x : x;
 					const sfrac = Number(a % scale) / Number(scale);
@@ -107,7 +120,6 @@ export function EnumV<E extends EnumType>(_: E) {
 		to:		(x: EnumValue<E>)	=> x as E[keyof E],
 		from:	(x: E[keyof E])		=> x as number,
 	};
-//	return (x: EnumValue<T>) => x as T[keyof T];// & EnumValue<T>;
 }
 
 export function EnumString<E extends EnumType>(e: E) {
@@ -145,7 +157,7 @@ export function EnumString<E extends EnumType>(e: E) {
 
 	return {
 		to(x: V) {
-			return e2[Number(x)] as keyof E ?? split_enum(x);
+			return e2[Number(x)] as (keyof E & string) ?? split_enum(x);
 		},
 		from(x: keyof E) {
 			const parts = (x as string).split('+');
@@ -169,12 +181,15 @@ export function EnumString<E extends EnumType>(e: E) {
 }
 
 export function Enum<E extends EnumType>(e: E) {
+	//return withToString(EnumString(e).to);
 	const toString = EnumString(e).to;
 	return (v: EnumValue<E>) => ({ valueOf: () => v, toString: () => toString(v) });
 }
+
 //-----------------------------------------------------------------------------
 // flags helpers
 //-----------------------------------------------------------------------------
+
 // Helper to generate all bit combinations
 type BitCombinations<T extends number, Acc extends number = 0> =
 	[T] extends [never]
@@ -232,22 +247,3 @@ export function Flags<E extends EnumType, NoFalse extends boolean = true>(e: E, 
 		}
 	};
 }
-
-/*
-export function asFlags<V extends number | bigint, E extends EnumType>(type: interop.TypeT<V>, e: E, noFalse = true) {
-	return as(type, Flags(e, noFalse));
-}
-export function asFlags2<V extends number | bigint, E extends EnumType>(type: interop.TypeT<V>, e: E, noFalse = true) {
-	const flags = Flags(e, noFalse);
-	return as(type, v => {
-		const wrapper = {
-			valueOf: () => v,
-			test:	(flag: V) => v & flag,
-			all:	(flag: V) => (v & flag) === flag,
-			[Symbol.for('debug.description')]: () => `0x${v.toString(16)}`,
-			[Symbol.for('debug.properties')]: () => flags.to(v)
-		};
-		return wrapper;
-	});
-}
-*/

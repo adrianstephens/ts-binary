@@ -169,7 +169,7 @@ export function makex<T extends object | number | bigint | string | boolean, T2>
 				: (s: any, v: T2) => {
 					const t = discriminator(v);
 					if (t !== undefined)
-						return after(type.put(s, t), () => v);
+						return after(type.put(s, t), () => t);
 				}
 		};
 

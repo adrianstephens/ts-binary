@@ -1,5 +1,4 @@
-import {BitAdapter, BitInput, BitFields} from './bitfields';
-import {bitsView} from './typedArray';
+import {BitAdapter, BitInput, BitFields, bitsView} from './bitfields';
 import {UpTo16, UpTo32, highestSetIndex } from '../common';
 
 function compare<T extends number|bigint|string>(a: T, b: T): number {
@@ -179,6 +178,7 @@ interface Float<R extends number | bigint, M extends number|bigint> extends BitA
 	pack(parts: FloatParts): R;
 }
 
+export const float4		= Float(1, 2);
 export const float8e4m3 = Float(3, 4);
 export const float8e5m2 = Float(2, 5);
 export const float16	= Float(10, 5);
@@ -187,8 +187,20 @@ export const float32	= Float(23, 8);
 export const float64	= Float(52, 11);
 export const float128	= Float(112, 15);
 
-export function Float<M extends number>(mbits: M, ebits: number, ebias = (1 << (ebits - 1)) - 1, sbit = true): Float<M extends UpTo32 ? number : bigint, BitInput<M>> {
-	const id = `${mbits},${ebits},${ebias},${sbit}`;
+export interface Options {
+	sbit?:		boolean;    // has sign bit (current, default true)
+	ebias?:		number;     // exponent bias (default 2^(ebits-1) - 1)
+	noInf?:		boolean;    // no Inf, reclaim those bit patterns for finite values (FN variants)
+	noNeg0?:	boolean;    // negative zero maps to NaN instead (UZ variants)
+}
+
+export function Float<M extends number>(mbits: M, ebits: number, options?: Options): Float<M extends UpTo32 ? number : bigint, BitInput<M>> {
+	let		ebias	= options?.ebias ?? (1 << (ebits - 1)) - 1;
+	const	sbit	= options?.sbit ?? true;
+	const	noInf	= options?.noInf ?? false;
+	const	noNeg0	= options?.noNeg0 ?? false;
+
+	const id	= `${mbits},${ebits},${ebias},${sbit}`;
 	if (cache[id])
 		return cache[id];
 
@@ -213,14 +225,23 @@ export function Float<M extends number>(mbits: M, ebits: number, ebias = (1 << (
 	const splitAdjust = (parts: FloatParts) => {
 		const m = parts.mantissa;
 		const e = parts.exponent;
-		return	e === emax	? {mantissa: m, exponent: Infinity, sign: parts.sign}
-			:	e === 0		? {mantissa: m, exponent: 1 - ebias, sign: parts.sign}
+		return	!noInf && e === emax
+			?	{mantissa: m, exponent: m === (typeof m === "bigint" ? mimpB - 1n : mimpN - 1) ? NaN : Infinity, sign: parts.sign}
+			:	e === 0 ? (noNeg0 && parts.sign && m === 0
+					? {mantissa: 0, exponent: NaN, sign: 0}
+					: {mantissa: m, exponent: 1 - ebias, sign: parts.sign}
+				)
 			:	{mantissa: typeof m === "bigint" ? m + mimpB : m + mimpN, exponent: e - ebias, sign: parts.sign};
 	};
 
 	const packAdjust = (parts: FloatParts) => {
+		if (isNaN(parts.exponent))
+			return noNeg0
+				? {mantissa: 0, exponent: 0, sign: 1}
+				: {mantissa: mimpN - 1, exponent: emax, sign: parts.sign};
+
 		if (parts.mantissa === 0)
-			return {mantissa: 0, exponent: parts.exponent === Infinity ? emax : 0, sign: parts.sign};
+			return {mantissa: 0, exponent: parts.exponent === Infinity ? emax : 0, sign: noNeg0 ? 0 : parts.sign};
 
 		let shift	= highestSetIndex(parts.mantissa) - mbits;
 		let e		= parts.exponent + ebias + shift;

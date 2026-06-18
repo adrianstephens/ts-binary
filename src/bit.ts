@@ -1,25 +1,79 @@
 import * as async from './async';
 import * as sync from './sync';
 import * as interop from './interop';
-import { getUintBits, putUintBits, getBigUintBits, putBigUintBits } from './utilities/typedArray';
+import * as common from './common';
 import { BitsType, MaybePromise, ReadType, after } from './common';
 import { TypedArrayLike, ViewMaker } from './utilities/typedArray';
+
+export function getUint(dv: DataView, offset: number, len: number, littleEndian?: boolean) {
+	const pad0 = offset & 7;
+	const end = len + pad0;
+	if (end >= 32)
+		return Number(getBigUint(dv, offset, len, littleEndian));
+	
+	const x = common.getUint(dv, offset >> 3, (end + 7) >> 3, littleEndian);
+	return (littleEndian ? (x >> pad0) : (x >> ((8 - end) & 7))) & ((1 << len) - 1);
+}
+
+export function putUint(dv: DataView, offset: number, v: number, len: number, littleEndian?: boolean) {
+	const pad0	= offset & 7;
+	const end	= len + pad0;
+	if (end >= 32)
+		return putBigUint(dv, offset, BigInt(v), len, littleEndian);
+
+	const boffset	= offset >> 3;
+	const blast		= (end - 1) >> 3;
+	const pad1		= end & 7;
+
+	v &= (1 << len) - 1;
+	if (littleEndian) {
+		if (pad0)
+			v = (v << pad0) | (dv.getUint8(boffset) & (0xff >> (8 - pad0)));
+		if (pad1)
+			v |= (dv.getUint8(boffset + blast) & (0xff << pad1)) << (blast << 3);
+	} else {
+		if (pad1)
+			v = (v << (8 - pad1)) | (dv.getUint8(boffset + blast) & (0xff >> pad1));
+		if (pad0)
+			v |= (dv.getUint8(boffset) & (0xff << (8 - pad0))) << (blast << 3);
+	}
+
+	common.putUint(dv, boffset, v, blast + 1, littleEndian);
+}
+
+export function getBigUint(dv: DataView, offset: number, len: number, littleEndian?: boolean) {
+	const end = (offset & 7) + len;
+	const x = common.getBigUint(dv, offset >> 3, (end + 7) >> 3, littleEndian);
+	return (littleEndian ? (x >> BigInt(offset & 7)) : (x >> BigInt((8 - end) & 7))) & ((1n << BigInt(len)) - 1n);
+}
+
+export function putBigUint(dv: DataView, offset: number, v: bigint, len: number, littleEndian?: boolean) {
+	const pad0	= offset & 7;
+	const end	= len + pad0;
+
+	const boffset	= offset >> 3;
+	const blast		= (end - 1) >> 3;
+	const pad1		= end & 7;
+
+	v &= (1n << BigInt(len)) - 1n;
+	if (littleEndian) {
+		if (pad0)
+			v = (v << BigInt(pad0)) | (BigInt(dv.getUint8(boffset) & (0xff >> (8 - pad0))));
+		if (pad1)
+			v |= BigInt(dv.getUint8(boffset + blast) & (0xff << pad1)) << BigInt(blast << 3);
+	} else {
+		if (pad1)
+			v = (v << BigInt(8 - pad1)) | (BigInt(dv.getUint8(boffset + blast) & (0xff >> pad1)));
+		if (pad0)
+			v |= BigInt(dv.getUint8(boffset) & (0xff << (8 - pad0))) << BigInt(blast << 3);
+	}
+
+	common.putBigUint(dv, boffset, v, blast + 1, littleEndian);
+}
 
 //-----------------------------------------------------------------------------
 //	stream
 //-----------------------------------------------------------------------------
-
-export interface _stream {
-	readonly kind: 'sync' | 'async';
-	be?: boolean;
-	flush_pending(): MaybePromise<void>;
-	tell_bit(): number;
-	seek_bit(offset: number): void;
-	skip_bit(offset: number): void;
-	align_bit(align: number): void;
-
-	view_at<T extends TypedArrayLike>(type: ViewMaker<T>, offset: number, len: number): MaybePromise<T>;
-}
 
 function shiftBuffer(buff: Uint8Array, shift: number, be?: boolean) {
 	if (shift === 0)
@@ -57,7 +111,7 @@ function unshiftBuffer(aligned: Uint8Array, shift: number, dst: Uint8Array, be?:
 	}
 }
 
-export class sync_stream extends sync._stream implements _stream {
+export class sync_stream extends sync._stream /*implements _stream*/ {
 	private pending_offset	= 0;
 	private pending_aligned?: Uint8Array;
 
@@ -65,19 +119,10 @@ export class sync_stream extends sync._stream implements _stream {
 		super(viewDelegate, offset, end, be, obj);
 		this.offset = offset << 3;
 	}
-	tell() 							{ return (this.offset >> 3) - this.offset0; }
-	seek(offset: number) 			{ this.flush_pending(); this.offset = (this.offset0 + offset) << 3; }
-	skip(len: number) 				{ this.flush_pending(); this.offset += len << 3; }
-	align(align: number) 			{ this.align_bit(align << 3); }
-	tell_bit() 						{ return this.offset - (this.offset0 << 3); }
-	seek_bit(offset: number) 		{ this.flush_pending(); this.offset = (this.offset0 << 3) + offset; }
-	skip_bit(offset: number) 		{ this.flush_pending(); this.offset += offset; }
-	align_bit(align: number) 		{
-		this.flush_pending();
-		const misalign = this.tell_bit() % align;
-		if (misalign)
-			this.skip_bit(align - misalign);
-	}
+	tell() 					{ return this.offset - (this.offset0 * 8); }
+	seek(offset: number) 	{ this.flush_pending(); this.offset = this.offset0 * 8 + offset; }
+	skip(len: number) 		{ this.flush_pending(); this.offset += len; }
+
 	flush_pending() {
 		const aligned = this.pending_aligned;
 		if (aligned) {
@@ -107,7 +152,6 @@ export class sync_stream extends sync._stream implements _stream {
 			return b;
 		}
 
-		this.flush_pending();
 		const buff	= this.view_absolute(Uint8Array, this.offset >> 3, ((this.offset & 7) + (byteLength << 3) + 7) >> 3);
 		const b		= shiftBuffer(buff, this.offset & 7, this.be);
 
@@ -121,7 +165,7 @@ export class sync_stream extends sync._stream implements _stream {
 	}
 }
 
-export class async_stream extends async._stream implements _stream {
+export class async_stream extends async._stream /*implements _stream*/ {
 	private pending_offset	= 0;
 	private pending_aligned?: Uint8Array;
 
@@ -129,18 +173,9 @@ export class async_stream extends async._stream implements _stream {
 		super(viewDelegate, offset, end, be, obj);
 		this.offset = offset << 3;
 	}
-	tell() 							{ return (this.offset >> 3) - this.offset0; }
-	seek(offset: number) 			{ this.offset = (this.offset0 + offset) << 3; }
-	skip(len: number) 				{ this.offset += len << 3; }
-	align(align: number) 			{ this.align_bit(align << 3); }
-	tell_bit() 						{ return this.offset - (this.offset0 << 3); }
-	seek_bit(offset: number) 		{ this.offset = (this.offset0 << 3) + offset; }
-	skip_bit(offset: number) 		{ this.offset += offset; }
-	align_bit(align: number) 		{
-		const misalign = this.tell_bit() % align;
-		if (misalign)
-			this.skip_bit(align - misalign);
-	}
+	tell() 					{ return this.offset - (this.offset0 << 3); }
+	seek(offset: number) 	{ this.offset = (this.offset0 << 3) + offset; }
+
 	async flush_pending() {
 		const aligned = this.pending_aligned;
 		if (!aligned)
@@ -170,7 +205,6 @@ export class async_stream extends async._stream implements _stream {
 			return b;
 		}
 
-		await this.flush_pending();
 		const buff	= await this.view_absolute(Uint8Array, this.offset >> 3, ((this.offset & 7) + (byteLength << 3) + 7) >> 3);
 		const b		= shiftBuffer(buff, this.offset & 7, this.be);
 
@@ -188,6 +222,8 @@ export class async_stream extends async._stream implements _stream {
 //	Types
 //-----------------------------------------------------------------------------
 
+type _stream = sync._stream | async._stream;
+
 interface TypeT<T> {
 	get(s: _stream): MaybePromise<T>;
 	put(s: _stream, v: T): MaybePromise<void>;
@@ -202,12 +238,12 @@ export function WithBits<T extends Type>(type: T): interop.TypeT<ReadType<T>> {
 				const s2 = s.subStream(sync_stream);
 				const result = s2.read(type as any);
 				s2.flush_pending();
-				s.skip(s2.tell());
+				s.skip((s2.tell() + 7) >> 3);
 				return result;
 			} else {
 				const s2 = s.subStream(async_stream);
 				return after(s2.read(type as any), result => after(s2.flush_pending(), () => {
-					s.skip(s2.tell());
+					s.skip((s2.tell() + 7) >> 3);
 					return result;
 				}));
 			}
@@ -217,11 +253,11 @@ export function WithBits<T extends Type>(type: T): interop.TypeT<ReadType<T>> {
 				const s2 = s.subStream(sync_stream);
 				s2.write(type as any, v);
 				s2.flush_pending();
-				s.skip(s2.tell());
+				s.skip((s2.tell() + 7) >> 3);
 			} else {
 				const s2 = s.subStream(async_stream);
 				return after(s2.write(type as any, v), () =>
-					after(s2.flush_pending(), () => s.skip(s2.tell()))
+					after(s2.flush_pending(), () => s.skip((s2.tell() + 7) >> 3))
 				);
 			}
 		}) as any,
@@ -230,55 +266,54 @@ export function WithBits<T extends Type>(type: T): interop.TypeT<ReadType<T>> {
 
 export const Bit = {
 	get(s: _stream) {
-		const pos = s.tell_bit();
+		const pos = s.tell();
 		return after(s.view_at(DataView, pos >> 3, 1), dv => {
-			s.skip_bit(1);
-			return !!getUintBits(dv, pos & 7, 1, !s.be);
+			s.skip(1);
+			return !!getUint(dv, pos & 7, 1, !s.be);
 		});
 	},
 	put(s: _stream, v: boolean) {
-		const pos = s.tell_bit();
+		const pos = s.tell();
 		return after(s.view_at(DataView, pos >> 3, 1), dv => {
-			putUintBits(dv, pos & 7, v ? 1 : 0, 1, !s.be);
-			s.skip_bit(1);
+			putUint(dv, pos & 7, v ? 1 : 0, 1, !s.be);
+			s.skip(1);
 		});
 	}
 } as TypeT<boolean>;
+
+function readBitsN(s: _stream, n: number) {
+	const pos = s.tell();
+	return after(s.view_at(DataView, pos >> 3, ((pos & 7) + n + 7) >> 3), dv => {
+		s.skip(n);
+		return getUint(dv, pos & 7, n, !s.be);
+	});
+}
+function writeBitsN(s: _stream, n: number, v: number) {
+	const pos = s.tell();
+	return after(s.view_at(DataView, pos >> 3, ((pos & 7) + n + 7) >> 3), dv => {
+		putUint(dv, pos & 7, v, n, !s.be);
+		s.skip(n);
+	});
+}
+function readBitsB(s: _stream, n: number) {
+	const pos = s.tell();
+	return after(s.view_at(DataView, pos >> 3, ((pos & 7) + n + 7) >> 3), dv => {
+		s.skip(n);
+		return getBigUint(dv, pos & 7, n, !s.be);
+	});
+}
+function writeBitsB(s: _stream, n: number, v: bigint) {
+	const pos = s.tell();
+	return after(s.view_at(DataView, pos >> 3, ((pos & 7) + n + 7) >> 3), dv => {
+		putBigUint(dv, pos & 7, v, n, !s.be);
+		s.skip(n);
+	});
+}
 
 export function Bits<N extends number>(n: N): TypeT<BitsType<N>>;
 export function Bits(n: number): TypeT<number|bigint>;
 export function Bits(n: interop.TypeX<number>): TypeT<number|bigint>;
 export function Bits(n: interop.TypeX<number>) {
-
-	function readBitsN(s: _stream, n: number) {
-		const pos = s.tell_bit();
-		return after(s.view_at(DataView, pos >> 3, ((pos & 7) + n + 7) >> 3), dv => {
-			s.skip_bit(n);
-			return getUintBits(dv, pos & 7, n, !s.be);
-		});
-	}
-	function writeBitsN(s: _stream, n: number, v: number) {
-		const pos = s.tell_bit();
-		return after(s.view_at(DataView, pos >> 3, ((pos & 7) + n + 7) >> 3), dv => {
-			putUintBits(dv, pos & 7, v, n, !s.be);
-			s.skip_bit(n);
-		});
-	}
-	function readBitsB(s: _stream, n: number) {
-		const pos = s.tell_bit();
-		return after(s.view_at(DataView, pos >> 3, ((pos & 7) + n + 7) >> 3), dv => {
-			s.skip_bit(n);
-			return getBigUintBits(dv, pos & 7, n, !s.be);
-		});
-	}
-	function writeBitsB(s: _stream, n: number, v: bigint) {
-		const pos = s.tell_bit();
-		return after(s.view_at(DataView, pos >> 3, ((pos & 7) + n + 7) >> 3), dv => {
-			putBigUintBits(dv, pos & 7, v, n, !s.be);
-			s.skip_bit(n);
-		});
-	}
-
 	if (typeof n === 'number') {
 		return n <= 32 ? {
 			get(s: _stream) { return readBitsN(s, n); },
