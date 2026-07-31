@@ -91,7 +91,7 @@ const numbersData: bin.ReadType<typeof numbersSpec> = {
 	uint104:	0x0102030405060708090a0b0cn,
 	uint128:	0x0102030405060708090a0b0c0d0e0f10n,
 	float16:	1.5,
-	float128:	bin.float.Float(112, 15)(1.5),
+	float128:	bin.float(112, 15)(1.5),
 	uintN:		100,
 };
 
@@ -105,7 +105,7 @@ test('Numbers: read and write', () => {
 });
 
 test('Float16: infinities and NaN roundtrip', () => {
-	const f16 = bin.float.float16;
+	const f16 = bin.float16;
 
 	const a = f16(1.5), b = f16(2.5);
 	const c = a.add(b);
@@ -124,7 +124,7 @@ test('Float16: infinities and NaN roundtrip', () => {
 });
 
 test('Float16: denormals decode and encode', () => {
-	const f16 = bin.float.float16;
+	const f16 = bin.float16;
 	assert.equal(f16.to(0x0001).valueOf(), 2 ** -24);
 	assert.equal(f16.to(0x03ff).valueOf(), (1023 / 1024) * (2 ** -14));
 	assert.equal(f16.to(0x0400).valueOf(), 2 ** -14);
@@ -139,7 +139,7 @@ test('Float128', () => {
 	console.log(+c64);
 
 
-	const f128 = bin.float.float128;
+	const f128 = bin.float128;
 	const a = f128(a64), b = f128(b64);
 	const c = a.add(b).sub(b);
 	console.log(+c);
@@ -171,6 +171,23 @@ test('ULEB128: roundtrip large', () => {
 	const val = bin.read(s2, bin.ULEB128);
 	console.log('ULEB128 read back:', val);
 	assert.equal(val, large);
+});
+
+// Regression: `highestSetIndex(0) === -1` (no bit set) once sized the output buffer to *zero*
+// bytes, silently writing nothing for value 0 instead of its one all-clear byte -- found while
+// building binary-libs' wasm.ts, where a real ULEB128-encoded 0 (a common vec-count/index value)
+// is routine, unlike in this suite's existing small/large cases.
+test('ULEB128: roundtrip zero', () => {
+	const s = new bin.growingStream();
+	bin.write(s, bin.ULEB128, 0);
+	const data = s.terminate();
+	console.log('ULEB128 write(0) produced:', data);
+	assert.equal(data.length, 1);
+	assert.equal(data[0], 0);
+	const s2 = new bin.stream(data);
+	const val = bin.read(s2, bin.ULEB128);
+	console.log('ULEB128 read back:', val);
+	assert.equal(val, 0);
 });
 
 //=============================================================================
@@ -360,6 +377,27 @@ test('SizeType: roundtrip', () => {
 	console.log('SizeType read back:', val);
 	assert.equal(val.a, 42);
 	assert.equal(val.b, 123);
+});
+
+// Regression: `Size`'s length prefix used to be written as a placeholder (sized for `0`) and then
+// patched in place once the real length was known -- fine when `len`'s encoding is fixed-width
+// (like the `UINT16_LE` case above), but with a *variable*-width length type (`ULEB128`, common for
+// e.g. wasm's own section framing) a real length needing more bytes than the placeholder did
+// silently overwrote that many already-written content bytes instead of making room for itself.
+// Found building binary-libs' wasm.ts, where `Size(ULEB128, ...)`-wrapped content routinely
+// crosses the 128-byte (1-byte -> 2-byte ULEB128) boundary.
+test('Size: content past the length type\'s 1-byte/2-byte ULEB128 boundary survives intact', () => {
+	const s = new bin.growingStream();
+	const content = new Uint8Array(200).fill(65);	// 200 > 127, so its ULEB128 length needs 2 bytes
+	bin.write(s, bin.Size(bin.ULEB128, bin.RemainingBuffer()), content);
+	const data = s.terminate();
+	assert.equal(data.length, 202, 'expected a 2-byte ULEB128 length prefix + 200 content bytes');
+	assert.ok([...data.slice(2)].every(b => b === 65), 'content bytes must survive unmodified');
+
+	const s2 = new bin.stream(data);
+	const back = bin.read(s2, bin.Size(bin.ULEB128, bin.RemainingBuffer()));
+	assert.equal(back?.length, 200);
+	assert.ok([...back!].every(b => b === 65));
 });
 
 test('OffsetType: read and write', () => {

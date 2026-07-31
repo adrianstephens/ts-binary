@@ -9,14 +9,22 @@ import { Descriptor, BitFields as BitFields0 } from './utilities/bitfields';
 import { _stream, measure } from './sync';
 import { get, put, TypeT, TypeX, Type, read, read_merge, readn, write, write_merge, writen, makex, isReader, _stream as inter_stream } from './interop';
 
-function CountMatchingFields(keys: Set<string>, spec: any) {
-	return Object.keys(spec).reduce((acc, key) => acc + (keys.has(key) ? 1 : 0), 0);
+const CONST_VALUE = Symbol('const');
+
+function CountMatchingFields(value: Record<string, any>, spec: any) {
+	return Object.keys(spec).reduce((acc, key) => {
+		if (!(key in value))
+			return acc;
+		const type = spec[key];
+		if (type && CONST_VALUE in type)
+			return value[key] === type[CONST_VALUE] ? acc + 1 : -Infinity;
+		return acc + 1;
+	}, 0);
 }
 
 function Discriminator<K extends string | number, T extends Record<K, any>>(value: any, switches: T): K | undefined {
 	if (typeof value === 'object') {
-		const keys = new Set(Object.keys(value));
-		const counts = Object.values(switches).map((spec: any) => CountMatchingFields(keys, spec));
+		const counts = Object.values(switches).map((spec: any) => CountMatchingFields(value, spec));
 		return Object.keys(switches)[counts.reduce((best, n, i) => n > counts[best] ? i : best, 0)] as K;
 	}
 }
@@ -61,11 +69,12 @@ export function DontRead<T>(): TypeT0<T|undefined> {
 	};
 }
 
-export function Const<T>(t: T): TypeT0<T> {
+export function Const<const T>(t: T): TypeT0<T> {
 	return {
 		get: _s => t,
-		put: _s => undefined
-	};
+		put: _s => undefined,
+		[CONST_VALUE]: t
+	} as TypeT0<T> & { [CONST_VALUE]: T };
 }
 
 export function SyncFunc<T>(func: (s: _stream, v?: T)=>T): sync.TypeT<T> {
@@ -350,7 +359,9 @@ export const ULEB128: TypeT<number|bigint> = {
 	})) as get<number|bigint>,
 
 	put: ((s, v) => {
-		const buffer = new Uint8Array(Math.floor(highestSetIndex(v) / 7) + 1);
+		// `highestSetIndex(0) === -1` (no bit is set), which would otherwise size this buffer to
+		// *zero* bytes -- encoding 0 still needs its one all-clear continuation-less byte.
+		const buffer = new Uint8Array(Math.max(1, Math.floor(highestSetIndex(v) / 7) + 1));
 		let i = 0;
 		if (typeof v === 'number') {
 			while (v > 127) {
@@ -565,19 +576,17 @@ export function Size<T extends Type>(len: TypeX<number|bigint>, type: T, skip0 =
 				});
 			}
 		})) as get<ReadType<T> | undefined>,
+		// Measures `v`'s encoded length up front (via a scratch `dummyStream`, same trick `Measured`
+		// already uses) rather than writing a placeholder length and patching it in afterwards: `len`
+		// is routinely itself variable-width (e.g. `ULEB128`), so a placeholder sized for `0` can need
+		// *fewer* bytes than the real length once content is known -- patching in place then silently
+		// overwrote however many content bytes landed in the gap. Precomputing sidesteps the whole
+		// placeholder-width question; the cost is one extra (sync) dummy pass per `Size`-wrapped value.
 		put: ((s, v) => {
-			const sizePos = s.tell();
-			return after(x.put(s, 0), () => {
-				if (v === undefined)
-					return undefined;
-
-				const s2 = s.offsetStream(s.tell());
-				return after(write(s2, type, v), () => {
-					const len2 = s2.tell();
-					s.seek(sizePos);
-					return after(x.put(s, len2), () => s.skip(len2));
-				});
-			});
+			if (v === undefined)
+				return x.put(s, 0) as ReturnType<typeof x.put>;
+			const len2 = measure(type as sync.Type, v as ReadType<sync.Type>);
+			return after(x.put(s, len2), () => write(s, type, v));
 		}) as put<ReadType<T> | undefined>
 	};
 }
@@ -701,8 +710,8 @@ function OptionalDiscriminator<T, F>(value: any, true_type: T, false_type: F) {
 	const false_obj = typeof false_type === 'object';
 
 	if (typeof value === 'object') {
-		const true_n = true_obj ? CountMatchingFields(new Set(Object.keys(value)), true_type) : 0;
-		const false_n = false_obj ? CountMatchingFields(new Set(Object.keys(value)), false_type) : 0;
+		const true_n = true_obj ? CountMatchingFields(value, true_type) : 0;
+		const false_n = false_obj ? CountMatchingFields(value, false_type) : 0;
 		return true_n > false_n ? true : false_n > true_n ? false : undefined;
 	}
 	return !true_obj && false_obj;
@@ -802,8 +811,8 @@ export function If<T extends Type, F extends Type | undefined = undefined>(test:
 
 class SwitchClass<K extends string | number, T extends Record<K, Type>> implements TypeT<ReadType<T[keyof T]>> {
 	x;
-	constructor(test: TypeX<K>, public switches: T, discriminator?: (value: any) => K) {
-		this.x = makex(test, discriminator ?? (value => Discriminator(value, switches)));
+	constructor(test: TypeX<K>, public switches: T, public discriminator: ((value: any) => K|undefined) = value => Discriminator(value, switches)) {
+		this.x = makex(test, discriminator);
 	}
 	lookup(x: any) {
 		return this.switches[x as keyof T] ?? (this.switches as any).default;
@@ -833,8 +842,8 @@ type DiscrimSwitch<KName extends string, T extends Record<string | number, any>>
 	[J in keyof T & (string | number)]: {[K in KName]: J} & ReadType<T[J]>
 }[keyof T & (string | number)];
 
-export function Switch<KName extends string, K extends string | number, T extends Record<K, Type>>(test: KName, switches: T) : TypeT<CorrelatedMerge<DiscrimSwitch<KName, T>>>;
-export function Switch<K extends string | number, T extends Record<K, Type>>(test: TypeX<K>, switches: T, discriminator?: (value: any) => K) : TypeT<ReadType<T[keyof T]>>;
+export function Switch<KName extends string, K extends string | number, const T extends Record<K, Type>>(test: KName, switches: T) : TypeT<CorrelatedMerge<DiscrimSwitch<KName, T>>>;
+export function Switch<K extends string | number, const T extends Record<K, Type>>(test: TypeX<K>, switches: T, discriminator?: (value: ReadType<T[keyof T]>) => K) : TypeT<ReadType<T[keyof T]>> & { discriminator: (value: any) => K|undefined };
 export function Switch<KName extends string, K extends string | number, T extends Record<K, Type>>(test: TypeX<K>, switches: T, discriminator?: (value: any) => K) {
 	const lookup = (x: any) => switches[x as keyof T] ?? (switches as any).default;
 
@@ -852,26 +861,8 @@ export function Switch<KName extends string, K extends string | number, T extend
 			}) as put<CorrelatedMerge<R>>
 		};
 
-	} else {
-		return new SwitchClass<K, T>(test, switches, discriminator) as TypeT<ReadType<T[keyof T]>>;
-/*		type R = ReadType<T[keyof T]>;
-		const x = makex(test, discriminator ?? (value => Discriminator(value, switches)));
-		return {
-			get: (s => after(x.get(s), key => {
-				const t = lookup(key);
-				return t && read(s, t);
-			})) as get<R>,
-			put: ((s, v) => {
-				return after(x.put(s, v),
-					key => {
-						const t = lookup(key);
-						return t ? write(s, t, v) : undefined;
-					}
-				);
-			}) as put<R>
-		};
-		*/
 	}
+	return new SwitchClass<K, T>(test, switches, discriminator) as TypeT<ReadType<T[keyof T]>>;
 }
 
 function SplitRepeat<T>(value: Repeated<ReadType<T>>, type: T): ReadType<T>[] {

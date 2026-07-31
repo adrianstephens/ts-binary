@@ -8,6 +8,8 @@ export type BitInput<N>		= number extends N ? number | bigint : N extends 0 ? nu
 export type BitOutput<T>	= T extends number ? (T extends UpTo52 ? number : number extends T ? number | bigint : bigint)
 	: T extends BitAdapterN<any, infer D> ? D
 	: T extends ArrayDescriptor<any, infer D> ? BitOutput<D>[]
+	: T extends readonly [infer Head extends Descriptor, ...infer Tail extends Descriptor[]] ? [BitOutput<Head>, ...BitOutput<Tail>]
+	: T extends readonly Descriptor[] ? BitOutput<T[number]>[]
 	: T extends object ? { [K in keyof T]: BitOutput<T[K]> }
 	: never;
 
@@ -16,10 +18,12 @@ export type Descriptor =
     | BitAdapterN<any, any>
     | ObjectDescriptor
     | ArrayDescriptor<any, any>
-    | DescriptorAdapter<any, any>;
+    | DescriptorAdapter<any, any>
+    | TupleDescriptor;
 
 interface ObjectDescriptor { [K: string]: Descriptor }
 interface ArrayDescriptor<C extends number, T extends Descriptor> { length: C; descriptor: T; }
+type TupleDescriptor = readonly Descriptor[];
 
 export interface DescriptorAdapter<T extends Descriptor, D> extends SimpleAdapter<BitOutput<T>, D>	{ descriptor: T; }
 export interface BitAdapter<T extends number|bigint, D> extends SimpleAdapter<T, D>					{ bits: number;}
@@ -152,6 +156,7 @@ export function BitFields<N extends number, T extends Descriptor>(bits: N, desc:
 
 
 	//	object
+//	const isArray = globalThis.Array.isArray(desc);
 	const bitfields:	Record<string, BitAdapterN<any, any>> = {};
 	let offset = 0;
 	for (const key in desc) {
@@ -168,7 +173,7 @@ export function BitFields<N extends number, T extends Descriptor>(bits: N, desc:
 			bits,
 			to: (x: number|bigint) => {
 				let y = BigInt(x);
-				const obj = /*isArray ? [] as any : */{} as Record<string, any>;
+				const obj = /*isArray ? [] as any :*/ {} as Record<string, any>;
 				for (const i in bitfields) {
 					const bf	= bitfields[i];
 					const bits	= bf.bits;

@@ -92,9 +92,9 @@ test('BE sync: unaligned byte read', () => {
 test('LE sync: WithBits + Size substream bounds', () => {
 	const root = new bin.stream(new Uint8Array([0, 1, 2, 3, 4, 5]));
 	const bits = root.subStream(bit.sync_stream) as bit.sync_stream;
-	bits.seek_bit(3);
+	bits.seek(3);
 	assert.strictEqual(bits.tell(), 0);
-	assert.strictEqual(bits.tell_bit(), 3);
+	assert.strictEqual(bits.tell(), 3);
 	assert.strictEqual(bits.remaining(), 6);
 	const sub = bits.offsetStream(1, 2);
 	assert.strictEqual(sub.tell(), 0);

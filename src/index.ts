@@ -228,7 +228,7 @@ export function Flags<E extends EnumType, NoFalse extends boolean = true>(e: E, 
 				}, {} as Record<string, number | boolean>)
 			) as FlagsObject<E, NoFalse>;
 		},
-		from(x: FlagsObject<E, true> | FlagsObject<E, false>) {
+		from(x: FlagsObject<E, NoFalse>) {
 			let value: number | bigint = 0;
 			for (const [k, v] of Object.entries(x)) {
 				const ev = e[k];

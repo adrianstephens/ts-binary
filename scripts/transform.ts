@@ -205,7 +205,7 @@ function resolveTypesTransformer(program: ts.Program): ts.TransformerFactory<ts.
 			//UNCOMMENT TO DISABLE:
 			//return sourceFile;
 
-			let typeformatflags = ts.TypeFormatFlags.UseAliasDefinedOutsideCurrentScope|ts.TypeFormatFlags.NoTruncation|ts.TypeFormatFlags.MultilineObjectLiterals;
+			let typeformatflags = ts.TypeFormatFlags.NoTruncation | ts.TypeFormatFlags.MultilineObjectLiterals;
 			let exported 	= false;
 			let depth		= 0;
 			let declaration: ts.Declaration | undefined;
@@ -222,6 +222,39 @@ function resolveTypesTransformer(program: ts.Program): ts.TransformerFactory<ts.
 
 
 			const moduleMap: Record<string, string> = {};
+			const exportedTypeMap = new Map<ts.Symbol, string>();
+			const exportedTypeNames = new Set<string>();
+			const shapeToExportedName = new Map<string, string>();
+
+			function safeGetTypeAtLocation(node: ts.Node): ts.Type | undefined {
+				try {
+					return typeChecker.getTypeAtLocation(node);
+				} catch {
+					return undefined;
+				}
+			}
+
+			for (const stmt of sourceFile.statements) {
+				if ((ts.isTypeAliasDeclaration(stmt) || ts.isInterfaceDeclaration(stmt) || ts.isClassDeclaration(stmt)) && isExported(stmt)) {
+					if (stmt.name) {
+						exportedTypeNames.add(stmt.name.text);
+						if (!stmt.typeParameters || stmt.typeParameters.length === 0) {
+							const sym = typeChecker.getSymbolAtLocation(stmt.name);
+							if (sym) {
+								exportedTypeMap.set(sym, stmt.name.text);
+								const type = typeChecker.getDeclaredTypeOfSymbol(sym);
+								if (type) {
+									if (type.aliasSymbol)
+										exportedTypeMap.set(type.aliasSymbol, stmt.name.text);
+									const typeNode = typeChecker.typeToTypeNode(type, sourceFile, typeformatflags);
+									if (typeNode)
+										shapeToExportedName.set(serializeNode(typeNode), stmt.name.text);
+								}
+							}
+						}
+					}
+				}
+			}
 
 			function serializeNode(node: ts.Node): string {
 				return ts.createPrinter().printNode(ts.EmitHint.Unspecified, node, sourceFile);
@@ -336,8 +369,18 @@ function resolveTypesTransformer(program: ts.Program): ts.TransformerFactory<ts.
 				if (ts.isTypeParameterDeclaration(node) || ts.isParameter(node))
 					return node;
 
-				if (ts.isTypeReferenceNode(node))
+				if (ts.isTypeReferenceNode(node)) {
+					if (ts.isIdentifier(node.typeName) && node.typeArguments && node.typeArguments.length === 1) {
+						const name = node.typeName.text;
+						if (/^(Uint8Array|Uint8ClampedArray|Int8Array|Int16Array|Uint16Array|Int32Array|Uint32Array|Float32Array|Float64Array|BigInt64Array|BigUint64Array|DataView)$/.test(name)) {
+							const argText = serializeNode(node.typeArguments[0]);
+							if (argText === 'ArrayBufferLike' || argText === 'ArrayBuffer') {
+								return factory.updateTypeReferenceNode(node, node.typeName, undefined);
+							}
+						}
+					}
 					return fixTypeReference(node);
+				}
 	
 				++depth;
 				node = ts.visitEachChild(node, visitSubType, context);
@@ -360,45 +403,128 @@ function resolveTypesTransformer(program: ts.Program): ts.TransformerFactory<ts.
 				return node;
 			}
 
-			function fixType(node: ts.TypeNode, declaration?: ts.Declaration) {
-				if (ts.isTypeReferenceNode(node) && !node.typeArguments)
-					return fixTypeReference(node);
+			function substituteExportedTypes(node: ts.Node, currentDeclName?: string): ts.Node {
+				function visit(n: ts.Node): ts.Node {
+					if (ts.isTypeNode(n)) {
+						if (ts.isTypeReferenceNode(n) && ts.isIdentifier(n.typeName)) {
+							const refName = n.typeName.text;
+							if (exportedTypeNames.has(refName) && refName !== currentDeclName) {
+								return n;
+							}
+						}
 
-				const type		= typeChecker.getTypeAtLocation(node);
-/*
-				if (ts.isImportTypeNode(node)) {
-					//node.qualifier
-					if (node.qualifier && ts.isIdentifier(node.qualifier)) {
-						const text = node.qualifier.escapedText;
-						for (const statement of sourceFile.statements) {
-							if (ts.isImportDeclaration(statement)) {
-								const module = statement.moduleSpecifier;
-								if (ts.isStringLiteral(module)) {
-									const importClause = statement.importClause;
-									if (importClause && importClause.namedBindings && ts.isNamedImports(importClause.namedBindings)) {
-										for (const i of importClause.namedBindings.elements) {
-											if (i.propertyName?.escapedText === text) {
-												importClause.getSourceFile();
-												const newName = factory.createIdentifier(i.name.getText());
-												//return factory.updateTypeReferenceNode(node, newName, node.typeArguments);
-											}
-										}
+						if (ts.isTypeLiteralNode(n) || ts.isIntersectionTypeNode(n)) {
+							const serialized = serializeNode(n);
+							const matchedShape = shapeToExportedName.get(serialized);
+							if (matchedShape && matchedShape !== currentDeclName) {
+								return factory.createTypeReferenceNode(factory.createIdentifier(matchedShape), undefined);
+							}
+						}
 
-									}
+						const type = safeGetTypeAtLocation(n);
+						if (type) {
+							let matchedName: string | undefined;
+							if (type.aliasSymbol && exportedTypeMap.has(type.aliasSymbol)) {
+								matchedName = exportedTypeMap.get(type.aliasSymbol);
+							} else if (type.symbol && exportedTypeMap.has(type.symbol)) {
+								matchedName = exportedTypeMap.get(type.symbol);
+							}
+
+							if (matchedName && matchedName !== currentDeclName) {
+								if (matchedName === 'DirectoryReadResult') {
+									return n;
 								}
+								return factory.createTypeReferenceNode(factory.createIdentifier(matchedName), undefined);
 							}
 						}
 					}
+					return ts.visitEachChild(n, visit, context);
 				}
-*/
-				const typetext	= typeChecker.typeToString(type, declaration);
-				let node1 = typetext === 'any' ? node : typeChecker.typeToTypeNode(type, declaration, typeformatflags);
+				return ts.visitNode(node, visit);
+			}
+
+			function fixType(node: ts.TypeNode, declaration?: ts.Declaration): ts.TypeNode {
+				let currentDeclSymbol: ts.Symbol | undefined;
+				let currentDeclName: string | undefined;
+				if (declaration) {
+					currentDeclSymbol = (declaration as any).symbol ?? safeGetTypeAtLocation(declaration)?.getSymbol();
+					if ((declaration as any).name && ts.isIdentifier((declaration as any).name))
+						currentDeclName = (declaration as any).name.text;
+				}
+
+				if (ts.isTypeReferenceNode(node) && !node.typeArguments) {
+					if (ts.isIdentifier(node.typeName)) {
+						const name = node.typeName.text;
+						if (exportedTypeNames.has(name) && name !== currentDeclName) {
+							return fixTypeReference(node);
+						}
+						const isUnexportedLocal = sourceFile.statements.some(s =>
+							(ts.isTypeAliasDeclaration(s) || ts.isInterfaceDeclaration(s) || ts.isClassDeclaration(s)) &&
+							s.name?.text === name && !isExported(s)
+						);
+						if (!isUnexportedLocal) {
+							return fixTypeReference(node);
+						}
+					} else {
+						return fixTypeReference(node);
+					}
+				}
+
+				if (ts.isTypeReferenceNode(node) && node.typeArguments) {
+					if (ts.isIdentifier(node.typeName)) {
+						const name = node.typeName.text;
+						if (exportedTypeNames.has(name) && name !== currentDeclName) {
+							return fixTypeReference(node);
+						}
+						const isUnexportedLocal = sourceFile.statements.some(s =>
+							(ts.isTypeAliasDeclaration(s) || ts.isInterfaceDeclaration(s) || ts.isClassDeclaration(s)) &&
+							s.name?.text === name && !isExported(s)
+						);
+						if (!isUnexportedLocal && name !== 'ReadType' && name !== 'InstanceType') {
+							const newArgs = node.typeArguments.map(arg => fixType(arg, declaration));
+							return factory.updateTypeReferenceNode(node, node.typeName, factory.createNodeArray(newArgs));
+						}
+					}
+				}
+
+				const type		= safeGetTypeAtLocation(node);
+				if (type) {
+					let matchedName: string | undefined;
+					if (type.aliasSymbol && exportedTypeMap.has(type.aliasSymbol)) {
+						matchedName = exportedTypeMap.get(type.aliasSymbol);
+					} else if (type.symbol && exportedTypeMap.has(type.symbol)) {
+						matchedName = exportedTypeMap.get(type.symbol);
+					}
+
+					if (matchedName && matchedName !== currentDeclName) {
+						return factory.createTypeReferenceNode(factory.createIdentifier(matchedName), undefined);
+					}
+				}
+
+				let origAliasSymbol: ts.Symbol | undefined;
+				if (type && type.aliasSymbol) {
+					if (currentDeclName && (type.aliasSymbol === currentDeclSymbol || (type.aliasSymbol.escapedName as string) === currentDeclName)) {
+						origAliasSymbol = type.aliasSymbol;
+						type.aliasSymbol = undefined;
+					} else if (!exportedTypeMap.has(type.aliasSymbol)) {
+						origAliasSymbol = type.aliasSymbol;
+						type.aliasSymbol = undefined;
+					}
+				}
+
+				const typetext	= type ? typeChecker.typeToString(type, declaration) : 'any';
+				let node1 = typetext === 'any' ? node : typeChecker.typeToTypeNode(type!, declaration, typeformatflags);
+
+				if (origAliasSymbol && type) {
+					type.aliasSymbol = origAliasSymbol;
+				}
 
 				if (node1) {
 					if (ts.isTypeReferenceNode(node1) && !node1.typeArguments)
 						return fixTypeReference(node1);
 
 					node1 = visitSubType(node1) as ts.TypeNode;
+					node1 = substituteExportedTypes(node1, currentDeclName) as ts.TypeNode;
 					const text2 = serializeNode(node1);
 					if (text2 !== 'any')
 						return node1;
@@ -468,9 +594,11 @@ function resolveTypesTransformer(program: ts.Program): ts.TransformerFactory<ts.
 				}
 
 				if (ts.isTypeAliasDeclaration(node)) {
+					if (!isExported(node))
+						return undefined;
 					declaration = node;
 					const save = typeformatflags;
-					typeformatflags = (typeformatflags & ~ts.TypeFormatFlags.UseAliasDefinedOutsideCurrentScope) | ts.TypeFormatFlags.InTypeAlias | ts.TypeFormatFlags.MultilineObjectLiterals;
+					typeformatflags = ts.TypeFormatFlags.NoTruncation | ts.TypeFormatFlags.MultilineObjectLiterals;
 					node = fixTypes(node);
 					typeformatflags = save;
 					return node;
@@ -590,7 +718,7 @@ function resolveTypesTransformer(program: ts.Program): ts.TransformerFactory<ts.
 
 				} else if (ts.isTypeAliasDeclaration(statement)) {
 					const save = typeformatflags;
-					typeformatflags = (typeformatflags & ~ts.TypeFormatFlags.UseAliasDefinedOutsideCurrentScope) | ts.TypeFormatFlags.InTypeAlias | ts.TypeFormatFlags.MultilineObjectLiterals;
+					typeformatflags = ts.TypeFormatFlags.NoTruncation | ts.TypeFormatFlags.MultilineObjectLiterals;
 					newStatements.push(fixTypes(statement));
 					typeformatflags = save;
 	
