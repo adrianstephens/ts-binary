@@ -153,9 +153,10 @@ export function Struct<T extends Type>(spec: T): TypeT<ReadType<T>> {
 export function Merge<T extends Type>(type: T): TypeT<MergeType<ReadType<T>>> {
 	type R = MergeType<ReadType<T>>;
 	return {
+		// an absent (undefined) field leaves the one it would merge over, as merge() does
 		get: (s => after(read(s, type), value => {
 			if (value && typeof value === 'object')
-				Object.assign(s.obj, value);
+				Object.entries(value).forEach(([k, v]) => merge(s.obj, v, k));
 			return {} as R;
 		})) as get<R>,
 		put: ((s, v) => write(s, type, s.obj)) as put<R>
@@ -585,7 +586,7 @@ export function Size<T extends Type>(len: TypeX<number|bigint>, type: T, skip0 =
 		put: ((s, v) => {
 			if (v === undefined)
 				return x.put(s, 0) as ReturnType<typeof x.put>;
-			const len2 = measure(type as sync.Type, v as ReadType<sync.Type>);
+			const len2 = measure(type as sync.Type, v as ReadType<sync.Type>, s);
 			return after(x.put(s, len2), () => write(s, type, v));
 		}) as put<ReadType<T> | undefined>
 	};
@@ -730,7 +731,7 @@ export function Optional<T extends Type, F extends Type | undefined = undefined>
 		})) as get<R>,
 		put: ((s, v) => {
 			return after(x.put(s, v),
-				t => t !== undefined ? write(s, t ? type : false_type as Type, v) : undefined
+				t => t ? write(s, type, v) : false_type ? write(s, false_type as Type, v) : undefined
 			);
 			//const t = discriminator(v);
 			//if (t !== undefined)

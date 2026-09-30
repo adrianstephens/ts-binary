@@ -195,8 +195,10 @@ export interface WithWrite {
 
 export function ReadClass<T extends sync.TypeReader>(spec: T) {
 	return class {
-		static async get(s: _stream) {
-			return new this(await read(s, spec));
+		static get(s: _stream) {
+			if (s instanceof sync._stream)
+				return new this(s);
+			return after(read(s, spec), value => new this(value));
 		}
 		constructor(s: sync._stream | ReadType<T>) {
 			if ('tell' in s)

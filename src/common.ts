@@ -546,9 +546,12 @@ type AllCorrelated<T>	= Exclude<{ [K in keyof T]: T[K] extends { get: (...args: 
 
 type NonMerged<T> = T extends any ? {[K in keyof T as
 	T[K] extends { new (...args: any): any } ? K
-	: T[K] extends { get: (...args: any) => infer R } ? NoPromise<R> extends undefined ? never : NoPromise<R> extends MergeBase<any> ? never : K
+	: T[K] extends { get: (...args: any) => infer R } ? NoPromise<R> extends undefined ? never : NoPromise<R> extends MergeBase<any> ? never : undefined extends NoPromise<R> ? never : K
 	: K
-]: ReadType<T[K]> } : never;
+]: ReadType<T[K]> } & {[K in keyof T as
+	T[K] extends { get: (...args: any) => infer R } ? NoPromise<R> extends undefined ? never : NoPromise<R> extends MergeBase<any> ? never : undefined extends NoPromise<R> ? K : never
+	: never
+]?: ReadType<T[K]> } : never;
 
 
 type AllKeys<T> = T extends any ? keyof T : never;

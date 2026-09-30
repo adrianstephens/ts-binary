@@ -1,6 +1,6 @@
 ## What `ReadType` should do
 
-### 1. Map spec readers to runtime values
+### 1. Map spec readers to compiletime types
 - If the spec is a reader type (`TypeReaderT<T>`), `ReadType<T>` should be `T`.
 - If the spec is an object with named fields, it should become an object whose keys are the spec keys and whose values are `ReadType` of each field.
 - If the spec is a tuple/array, it should become the corresponding tuple/array of `ReadType` values.

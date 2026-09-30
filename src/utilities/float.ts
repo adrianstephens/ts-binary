@@ -225,8 +225,9 @@ export function Float<M extends number>(mbits: M, ebits: number, options?: Optio
 	const splitAdjust = (parts: FloatParts) => {
 		const m = parts.mantissa;
 		const e = parts.exponent;
+		// IEEE 754: an exponent of all ones is Infinity when the trailing significand is zero, NaN otherwise
 		return	!noInf && e === emax
-			?	{mantissa: m, exponent: m === (typeof m === "bigint" ? mimpB - 1n : mimpN - 1) ? NaN : Infinity, sign: parts.sign}
+			?	{mantissa: m, exponent: (typeof m === "bigint" ? m === 0n : m === 0) ? Infinity : NaN, sign: parts.sign}
 			:	e === 0 ? (noNeg0 && parts.sign && m === 0
 					? {mantissa: 0, exponent: NaN, sign: 0}
 					: {mantissa: m, exponent: 1 - ebias, sign: parts.sign}
@@ -289,7 +290,14 @@ export function Float<M extends number>(mbits: M, ebits: number, options?: Optio
 		raw: 0,
 		from(x: number)		{ return rawP(float64.split(NumberToRep(x))); },
 		parts()				{ return splitAdjust(bits.to(this.raw)); },
-		valueOf()			{ return RepToNumber(float64.pack(splitAdjust(bits.to(this.raw)))); },
+		valueOf()			{
+			// only Inf, NaN and the special variants need the general (BigInt) path
+			const raw = this.raw as number, m = raw % mimpN, all = Math.floor(raw / mimpN), e = all % (emax + 1), neg = sbit && (Math.floor(all / (emax + 1)) & 1) === 1;
+			if ((e === emax && !noInf) || (noNeg0 && e === 0 && m === 0 && neg))
+				return RepToNumber(float64.pack(splitAdjust(bits.to(this.raw))));
+			const v = e === 0 ? m * 2 ** (1 - ebias) : (m + mimpN) * 2 ** (e - ebias);
+			return neg ? -v : v;
+		},
 		toString()			{ return this.valueOf().toString(); },
 		abs() 				{ return make(this.raw & ~signN); },
 		neg() 				{ return make(this.raw ^ signN); },

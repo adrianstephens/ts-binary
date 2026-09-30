@@ -39,13 +39,13 @@ The `@isopodlabs/binary` package is a TypeScript library for declarative binary 
 #### Reading Data
 ```typescript
 const stream = new binary.stream(data);
-const myData = binary.read(stream, StructSpec);
+const myData = stream.read(StructSpec);
 ```
 
 #### Writing Data  
 ```typescript
 const outStream = new binary.growingStream();
-binary.write(outStream, StructSpec, value);
+outStream.write(StructSpec, value);
 const bytes = outStream.terminate();
 ```
 
@@ -86,13 +86,13 @@ const StructSpec = {
 ### Reading Complex Structures
 ```typescript
 const stream = new binary.stream(data);
-const myData = binary.read(stream, StructSpec);
+const myData = stream.read(StructSpec);
 ```
 
 ### Writing Complex Structures
 ```typescript
 const outStream = new binary.growingStream();
-binary.write(outStream, StructSpec, value);
+outStream.write(StructSpec, value);
 const bytes = outStream.terminate();
 ```
 
@@ -250,8 +250,6 @@ binary.writen(stream, type, array);
 1. **Use Type Specifications**: Define all structures using type specifications for clarity and type safety
 2. **Leverage Stream System**: Use streams for memory-efficient processing of large binary files
 3. **Handle Endianness Explicitly**: Be aware of endianness requirements for your data formats
-4. **Validate Input**: Always validate that streams have sufficient data before reading
-5. **Measure Before Writing**: Use `measure()` to calculate buffer sizes when needed
 
 ## Example Usage Patterns
 
@@ -264,13 +262,13 @@ const FileHeader = {
 };
 
 const stream = new binary.stream(data);
-const header = binary.read(stream, FileHeader);
+const header = stream.read(FileHeader);
 ```
 
 ### Writing Binary Data
 ```typescript
 const outStream = new binary.growingStream();
-binary.write(outStream, FileHeader, header);
+outStream.write(FileHeader, header);
 const bytes = outStream.terminate();
 ```
 

@@ -247,8 +247,16 @@ function resolveTypesTransformer(program: ts.Program): ts.TransformerFactory<ts.
 									if (type.aliasSymbol)
 										exportedTypeMap.set(type.aliasSymbol, stmt.name.text);
 									const typeNode = typeChecker.typeToTypeNode(type, sourceFile, typeformatflags);
-									if (typeNode)
-										shapeToExportedName.set(serializeNode(typeNode), stmt.name.text);
+									if (typeNode) {
+										// Must go through the same `visitSubType` normalization (e.g. stripping
+										// `Uint8Array<ArrayBufferLike>` down to `Uint8Array`) that every candidate
+										// occurrence gets put through in `fixType` before its shape is looked up
+										// here -- otherwise a type whose shape only differs from this raw,
+										// unnormalized text by something `visitSubType` would have stripped can
+										// never match, and silently gets fully inlined instead of referenced by name.
+										const normalized = visitSubType(typeNode) as ts.TypeNode;
+										shapeToExportedName.set(serializeNode(normalized), stmt.name.text);
+									}
 								}
 							}
 						}
@@ -265,16 +273,26 @@ function resolveTypesTransformer(program: ts.Program): ts.TransformerFactory<ts.
 					console.log('  '.repeat(depth) + x);
 			}
 
+			// visitEachChild on an accessor starts a lexical environment for its body, which asserts outside one; a
+			// declaration's accessor (e.g. a swizzle in an inlined float3 literal) has no body, so only its types are visited
+			function visitChildren(node: ts.Node, visitor: ts.Visitor): ts.Node {
+				if (ts.isGetAccessorDeclaration(node))
+					return factory.updateGetAccessorDeclaration(node, node.modifiers, node.name, ts.visitNodes(node.parameters, visitor, ts.isParameter), node.type && ts.visitNode(node.type, visitor, ts.isTypeNode), node.body);
+				if (ts.isSetAccessorDeclaration(node))
+					return factory.updateSetAccessorDeclaration(node, node.modifiers, node.name, ts.visitNodes(node.parameters, visitor, ts.isParameter), node.body);
+				return ts.visitEachChild(node, visitor, context);
+			}
+
 			function fixParents(node: ts.Node) {
 				let	parent = node;
 				function visit(node: ts.Node): ts.Node {
 					const save = parent;
 					parent = node;
-					node = ts.visitEachChild(node, visit, context);
+					node = visitChildren(node, visit);
 					setParent(node, parent = save);
 					return node;
 				}
-				return ts.visitEachChild(node, visit, context);
+				return visitChildren(node, visit);
 			}
 			function templateSubstitute(node: ts.Node, param: string, replacement: ts.TypeNode) {
 				function visit(node: ts.Node): ts.Node {
@@ -284,7 +302,7 @@ function resolveTypesTransformer(program: ts.Program): ts.TransformerFactory<ts.
 							return replacement;
 					}
 
-					return ts.visitEachChild(node, visit, context);
+					return visitChildren(node, visit);
 				}
 				return ts.visitNode(node, visit);
 			}
@@ -296,7 +314,7 @@ function resolveTypesTransformer(program: ts.Program): ts.TransformerFactory<ts.
 						if (resolved)
 							return resolved;
 					}
-					return ts.visitEachChild(n, visit, context);
+					return visitChildren(n, visit);
 				}
 				return ts.visitNode(node, visit) as ts.TypeNode;
 			}
@@ -313,7 +331,17 @@ function resolveTypesTransformer(program: ts.Program): ts.TransformerFactory<ts.
 				return ret as ts.TypeNode;
 			}
 			
-			function fixTypeReference(node: ts.TypeReferenceNode): ts.TypeReferenceNode {
+			// `visitSubType`'s tree walk never recurses into a `TypeReferenceNode`'s own type arguments (it
+			// treats a type reference as an opaque unit and hands off to `fixTypeReferenceCore` for just the
+			// reference itself) -- so anything nested inside a generic type argument (e.g. `Uint8Array<ArrayBufferLike>`
+			// buried inside `Partial<WasmModuleData>`-style wrapping) never gets the same normalization pass
+			// applied elsewhere, and so can never match `shapeToExportedName`'s registered (normalized) text.
+			// Confirmed concretely: within `WasmModule_base`'s declaration, the first 14 occurrences of `Instr`'s
+			// shape (nested inside such a type reference) stayed unstripped and never matched, while the next 11
+			// (in a plain, non-nested position) were stripped and matched correctly -- same file, same run.
+			// `fixTypeReference` now recurses into type arguments via `visitSubType` after the rename step, so
+			// every position gets the same treatment regardless of whether it's wrapped in a generic reference.
+			function fixTypeReferenceCore(node: ts.TypeReferenceNode): ts.TypeReferenceNode {
 				const name	= node.typeName;
 				if (ts.isQualifiedName(name))
 					return node;
@@ -358,6 +386,77 @@ function resolveTypesTransformer(program: ts.Program): ts.TransformerFactory<ts.
 				return node;
 			}
 
+			function fixTypeReference(node: ts.TypeReferenceNode): ts.TypeReferenceNode {
+				const renamed = fixTypeReferenceCore(node);
+				if (renamed.typeArguments && renamed.typeArguments.length) {
+					const newArgs = renamed.typeArguments.map(arg => visitSubType(arg) as ts.TypeNode);
+					return factory.updateTypeReferenceNode(renamed, renamed.typeName, factory.createNodeArray(newArgs));
+				}
+				return renamed;
+			}
+
+
+			// Merges same-name property signatures found across the constituents of a flattened
+			// intersection of type literals (e.g. `{f32:{sub:...}} & {f32:{mul:...}}` -> a single
+			// `{f32:{sub:...;mul:...}}`). This is purely a syntax-level coalesce: it does not change
+			// what the type accepts, it just prints the same structural type the way a `TreeBuilder`-style
+			// chain actually builds it at runtime (one shared, deep-merged object), instead of as a raw
+			// chain of `&`s. Only same-named `PropertySignature`s are merged (recursing into their value
+			// types); anything else (methods, index signatures, or a same-named collision between two
+			// non-object-literal types, e.g. two distinct function types) is left untouched/unmerged, since
+			// that would indicate a real shape conflict rather than the same key legitimately built up
+			// piecemeal across multiple constituents.
+			//
+			// Partial, not all-or-nothing: a same-named group can include one genuinely non-literal
+			// member alongside dozens of literal ones (e.g. a `<T>(...) => ...` generic factory mixed in
+			// with plain `{op:...}` leaves under the same key, as in `I`'s opcode groups). Requiring every
+			// member to be a literal before merging any of them meant one such member silently blocked the
+			// merge for the whole group. Merge just the literal subset and keep the rest as separate
+			// intersection members instead.
+			function mergeTypeNodes(types: ts.TypeNode[]): ts.TypeNode {
+				if (types.length === 1)
+					return types[0];
+				const literals = types.filter(ts.isTypeLiteralNode);
+				const rest = types.filter(t => !ts.isTypeLiteralNode(t));
+				if (literals.length <= 1)
+					return factory.createIntersectionTypeNode(factory.createNodeArray(types));
+				const merged = factory.createTypeLiteralNode(mergeTypeLiteralMembers(literals.flatMap(t => t.members)));
+				return rest.length ? factory.createIntersectionTypeNode(factory.createNodeArray([merged, ...rest])) : merged;
+			}
+
+			function mergeTypeLiteralMembers(members: readonly ts.TypeElement[]): ts.TypeElement[] {
+				const groups = new Map<string, ts.TypeElement[]>();
+				const order: string[] = [];
+				let uniqueId = 0;
+
+				for (const m of members) {
+					const key = ts.isPropertySignature(m) && m.name && (ts.isIdentifier(m.name) || ts.isStringLiteral(m.name))
+						? 'p:' + m.name.text
+						: 'u:' + (uniqueId++);
+					if (!groups.has(key)) {
+						groups.set(key, []);
+						order.push(key);
+					}
+					groups.get(key)!.push(m);
+				}
+
+				const result: ts.TypeElement[] = [];
+				for (const key of order) {
+					const group = groups.get(key)!;
+					if (group.length === 1) {
+						result.push(group[0]);
+						continue;
+					}
+					const first = group[0] as ts.PropertySignature;
+					const types = group.map(g => (g as ts.PropertySignature).type).filter((t): t is ts.TypeNode => !!t);
+					if (types.length !== group.length) {
+						result.push(...group);
+						continue;
+					}
+					result.push(factory.updatePropertySignature(first, first.modifiers, first.name, first.questionToken, mergeTypeNodes(types)));
+				}
+				return result;
+			}
 
 			//various type fixing
 			function visitSubType(node: ts.Node): ts.Node {
@@ -366,8 +465,23 @@ function resolveTypesTransformer(program: ts.Program): ts.TransformerFactory<ts.
 				if (ts.isQualifiedName(node))
 					return node;
 
-				if (ts.isTypeParameterDeclaration(node) || ts.isParameter(node))
+				if (ts.isTypeParameterDeclaration(node))
 					return node;
+
+				// Unlike a type parameter declaration (`<T extends ...>`), a value parameter's own `.type` is
+				// exactly the kind of position this pass exists to normalize -- e.g. a constructor parameter's
+				// type (as in `WasmModule_base`'s synthesized constructor) can itself be a huge union embedding
+				// the same shapes found elsewhere in the file. Previously this returned the whole parameter
+				// unchanged without ever visiting `.type`, so nothing nested inside a parameter's type could
+				// ever be normalized or matched against `shapeToExportedName`, regardless of any other fix here.
+				if (ts.isParameter(node)) {
+					if (node.type) {
+						const newType = visitSubType(node.type) as ts.TypeNode;
+						if (newType !== node.type)
+							return factory.updateParameterDeclaration(node, node.modifiers, node.dotDotDotToken, node.name, node.questionToken, newType, node.initializer);
+					}
+					return node;
+				}
 
 				if (ts.isTypeReferenceNode(node)) {
 					if (ts.isIdentifier(node.typeName) && node.typeArguments && node.typeArguments.length === 1) {
@@ -383,7 +497,7 @@ function resolveTypesTransformer(program: ts.Program): ts.TransformerFactory<ts.
 				}
 	
 				++depth;
-				node = ts.visitEachChild(node, visitSubType, context);
+				node = visitChildren(node, visitSubType);
 				--depth;
 
 				// strip {}'s from intersection
@@ -391,6 +505,12 @@ function resolveTypesTransformer(program: ts.Program): ts.TransformerFactory<ts.
 					const filtered = node.types.filter(n => !ts.isTypeLiteralNode(n) || n.members.length);
 					if (filtered.length === 1)
 						return filtered[0];
+
+					// coalesce same-named properties across constituent type literals (see `mergeTypeNodes`)
+					// so `{f32:{sub}} & {f32:{mul}}`-style chains print as one merged object instead of `&`
+					if (filtered.every(ts.isTypeLiteralNode))
+						return factory.createTypeLiteralNode(mergeTypeLiteralMembers(filtered.flatMap(n => (n as ts.TypeLiteralNode).members)));
+
 					return ts.factory.updateIntersectionTypeNode(node, ts.factory.createNodeArray(filtered));
 		  		}
 
@@ -413,7 +533,12 @@ function resolveTypesTransformer(program: ts.Program): ts.TransformerFactory<ts.
 							}
 						}
 
-						if (ts.isTypeLiteralNode(n) || ts.isIntersectionTypeNode(n)) {
+						// `ts.isUnionTypeNode` matters here as much as the other two -- an exported type whose
+						// declared shape is a discriminated union (e.g. `Instr`) is exactly as eligible for
+						// by-name substitution as an object-literal or intersection shape; without it, any
+						// such type can never be matched here and silently gets fully inlined everywhere
+						// it's used instead.
+						if (ts.isTypeLiteralNode(n) || ts.isIntersectionTypeNode(n) || ts.isUnionTypeNode(n)) {
 							const serialized = serializeNode(n);
 							const matchedShape = shapeToExportedName.get(serialized);
 							if (matchedShape && matchedShape !== currentDeclName) {
@@ -438,7 +563,7 @@ function resolveTypesTransformer(program: ts.Program): ts.TransformerFactory<ts.
 							}
 						}
 					}
-					return ts.visitEachChild(n, visit, context);
+					return visitChildren(n, visit);
 				}
 				return ts.visitNode(node, visit);
 			}
@@ -547,13 +672,13 @@ function resolveTypesTransformer(program: ts.Program): ts.TransformerFactory<ts.
 				}
 				if (ts.isTypeNode(node))
 					return fixType(node, declaration);
-				return ts.visitEachChild(node, visitType, context);
+				return visitChildren(node, visitType);
 			}
 
 			function fixTypes<T extends ts.Declaration>(node: T) {
 				const save = declaration;
 				declaration = getParseTreeNode(node);
-				node = ts.visitEachChild(node, visitType, context);
+				node = visitChildren(node, visitType);
 				declaration = save;
 				return node;
 			}
@@ -566,8 +691,37 @@ function resolveTypesTransformer(program: ts.Program): ts.TransformerFactory<ts.
 					return node;
 //
 				if (ts.isVariableDeclaration(node)) {
-					if (isExported(node)) {
-						exported = true;
+					// `isExported(node)` (`ts.getCombinedModifierFlags`, which walks `.parent`) is not reliable
+					// here: these are nodes from the synthesized `afterDeclarations` output, and their `.parent`
+					// chain isn't necessarily set up the way a parsed source file's would be. This never mattered
+					// before because an exported statement's children were never even visited (see the
+					// `isVariableStatement` handler below) -- so use the already-correct, closure-captured
+					// `exported` flag that handler just set from the *statement's own* modifiers, instead of
+					// re-deriving export-ness from this declaration node's (possibly absent) parent chain.
+					if (exported) {
+						// An exported `const x = ...` with no explicit annotation still arrives here with
+						// `node.type` already populated -- this is an `afterDeclarations` transform, so tsc's
+						// own declaration emitter has already synthesized the inferred type as a real TypeNode
+						// before we ever see it. Previously that synthesized type was returned completely
+						// untouched, so none of `fixType`/`visitSubType`'s normalization (including the
+						// intersection-member merge above) ever applied to it -- only explicitly-annotated
+						// declarations and type aliases went through that path. Routing it through `fixType`
+						// here (mirroring the `inherited`-case handling just below) gives inferred exported
+						// consts the same treatment as everything else.
+						//
+						// `fixType` hands its `declaration` argument to `typeChecker.typeToTypeNode` as the
+						// "enclosing declaration" for symbol-accessibility resolution, which needs a node with
+						// real binder metadata (parent/id chain) from the original checked program. This
+						// synthesized `node` doesn't have that -- passing it directly crashes deep inside tsc's
+						// own `isSymbolAccessible` (`getNodeId` on an unbound node). `getParseTreeNode` walks
+						// `.original` back to the real source declaration, exactly like `fixTypes` already does
+						// for the `TypeAliasDeclaration` case.
+						const realDecl = getParseTreeNode(node);
+						if (node.type && ts.isVariableDeclaration(realDecl)) {
+							const type = fixType(node.type, realDecl);
+							if (type !== node.type)
+								return factory.updateVariableDeclaration(node, node.name, node.exclamationToken, type, node.initializer);
+						}
 						return node;
 					}
 					for (const i of inherited) {
@@ -586,10 +740,14 @@ function resolveTypesTransformer(program: ts.Program): ts.TransformerFactory<ts.
 				if (ts.isVariableStatement(node)) {
 					const modifiers = node.modifiers;
 					exported	= !!modifiers && modifiers.some(modifier => modifier.kind === ts.SyntaxKind.ExportKeyword);
-					if (!exported) {
-						//fixParents(node);
-						node = ts.visitEachChild(node, stripCrap, context);
-					}
+					// Previously this only recursed into the declaration list when *not* exported (on the way
+					// to dropping it) -- an exported statement's node was returned as-is, so its declarations
+					// never reached the `ts.isVariableDeclaration` visitor below, and an exported `const x = ...`
+					// with no explicit annotation (tsc's own inferred type, synthesized onto `node.type` by this
+					// point since this is an `afterDeclarations` transform) never got normalized/merged. Always
+					// recursing lets that visitor run for both cases; `isExported`'s combined-modifier-flags
+					// lookup still resolves correctly per-declaration off this statement's own modifiers.
+					node = visitChildren(node, stripCrap);
 					return exported ? node : undefined;
 				}
 
@@ -605,7 +763,7 @@ function resolveTypesTransformer(program: ts.Program): ts.TransformerFactory<ts.
 				}
 
 				++depth;
-				node = ts.visitEachChild(node, stripCrap, context);
+				node = visitChildren(node, stripCrap);
 				--depth;
 				return node;
 			}

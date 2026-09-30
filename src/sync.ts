@@ -120,7 +120,7 @@ export class growingStream extends _stream {
 }
 
 export class dummyStream extends _stream {
-	constructor() {
+	constructor(be?: boolean, obj?: any) {
 		let buffer = new ArrayBuffer(1024);
 		super((type, offset, len) => {
 			const needed = offset + len * (type.BYTES_PER_ELEMENT ?? 1);
@@ -128,12 +128,13 @@ export class dummyStream extends _stream {
 				buffer = new ArrayBuffer(Math.max(buffer.byteLength * 2, needed));
 
 			return new type(buffer, 0, len);
-		});
+		}, 0, undefined, be, obj);
 	}
 }
 
-export function measure<T extends Type>(type: T, data?: ReadType<T>) {
-	const dummy = new dummyStream;
+// measured as if written where `context` is, since a writer may look at its enclosing objects (s.obj)
+export function measure<T extends Type>(type: T, data?: ReadType<T>, context?: common_stream) {
+	const dummy = new dummyStream(context?.be, context?.obj);
 	if (data !== undefined)
 		dummy.write(type, data);
 	else
@@ -228,7 +229,7 @@ export function ReadClass<T extends TypeReader>(spec: T) {
 				s = s.read(spec);
 			return Object.assign(this, s);
 		}
-	} as (new(s: _stream) => ReadType<T>) & WithStaticGet;
+	} as (new(s: _stream | ReadType<T>) => ReadType<T>) & WithStaticGet;
 }
 
 export function Class<T extends Type>(spec: T) {

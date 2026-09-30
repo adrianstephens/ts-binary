@@ -133,6 +133,36 @@ test('Float16: denormals decode and encode', () => {
 	assert.equal(f16(2 ** -14).raw, 0x0400);
 });
 
+test('Float: an all-ones exponent is Infinity at zero significand and NaN otherwise', () => {
+	const f16 = bin.float16;
+	assert.equal(f16.to(0x7c00).valueOf(), Infinity);
+	assert.equal(f16.to(0xfc00).valueOf(), -Infinity);
+	assert.ok(Number.isNaN(f16.to(0x7c01).valueOf()));
+	assert.ok(Number.isNaN(f16.to(0x7e00).valueOf()));
+	assert.ok(Number.isNaN(f16.to(0x7fff).valueOf()));
+	assert.ok(Number.isNaN(f16.to(0xfc01).valueOf()));
+
+	assert.equal(bin.float32.to(0x7f800000).valueOf(), Infinity);
+	assert.equal(bin.float32.to(0xff800000).valueOf(), -Infinity);
+	assert.ok(Number.isNaN(bin.float32.to(0x7f800001).valueOf()));
+	assert.ok(Number.isNaN(bin.float32.to(0x7fc00000).valueOf()));
+
+	// every pattern of the 16-bit formats, against the IEEE reading of its bits
+	for (const [f, mbits, ebits] of [[bin.float16, 10, 5], [bin.Bfloat16, 7, 8]] as const) {
+		const emax	= (1 << ebits) - 1;
+		const bias	= (1 << (ebits - 1)) - 1;
+		for (let raw = 0; raw < 2 ** (1 + ebits + mbits); raw++) {
+			const sign = raw >> (mbits + ebits) & 1;
+			const e = raw >> mbits & emax;
+			const m = raw & ((1 << mbits) - 1);
+			const want = e === emax
+				? (m === 0 ? (sign ? -Infinity : Infinity) : NaN)
+				: (sign ? -1 : 1) * (e === 0 ? m * 2 ** (1 - bias - mbits) : (1 + m / 2 ** mbits) * 2 ** (e - bias));
+			assert.ok(Object.is(+f.to(raw), want), `${mbits}/${ebits} bit pattern 0x${raw.toString(16)}`);
+		}
+	}
+});
+
 test('Float128', () => {
 	const a64 = 1, b64 = 2 ** 64;
 	const c64 = a64 + b64 - b64;
@@ -527,6 +557,56 @@ test('BitFields: tuple descriptor support', () => {
 	const result = bitFields.to(0xAB);
 	assert.equal(result[0], 0xB);
 	assert.equal(result[1], 0xA);
+});
+
+test('BitFields: byte arrays are typed array views, other arrays proxies', () => {
+	const Struct	= bin.typedArray.BitFields({ n: 16, bytes: bin.bitfields.Array(4, 8), signed: bin.bitfields.Array(2, -8), nib: bin.bitfields.Array(4, 4) });
+	const buffer	= new Uint8Array([0x34, 0x12, 1, 2, 3, 250, 0xfe, 0x7f, 0xa1, 0xb2]);
+	const x			= new Struct(buffer.buffer, 0, 1)[0];
+
+	assert.equal(x.n, 0x1234);
+	assert.ok(x.bytes instanceof Uint8Array && x.signed instanceof Int8Array);
+	assert.deepEqual([...x.bytes], [1, 2, 3, 250]);
+	assert.deepEqual([...x.signed], [-2, 127]);
+	assert.deepEqual([x.nib[0], x.nib[1], x.nib[3], x.nib[4]], [1, 10, 11, undefined]);
+
+	x.bytes[1] = 99;
+	buffer[6] = 0x80;
+	assert.deepEqual([...buffer.subarray(2, 6)], [1, 99, 3, 250]);
+	assert.equal(x.signed[0], -128);
+});
+
+test('BitFields: fields which do not start on a byte boundary', () => {
+	const bytes	= new Uint8Array([0x21, 0x43, 0x65]);
+	const le	= new (bin.typedArray.BitFields({ a: 4, b: 4, c: 8, d: 4, e: 4 }))(bytes.buffer, 0, 1)[0];
+	assert.deepEqual([le.a, le.b, le.c, le.d, le.e], [1, 2, 0x43, 5, 6]);
+
+	const be	= new (bin.typedArray.BitFields({ a: 4, b: 4, c: 8, d: 4, e: 4 }, true))(bytes.buffer, 0, 1)[0];
+	assert.deepEqual([be.a, be.b, be.c, be.d, be.e], [2, 1, 0x43, 6, 5]);
+
+	le.b = 0xf;
+	le.e = 0xa;
+	assert.deepEqual([...bytes], [0xf1, 0x43, 0xa5]);
+});
+
+test('BitFields: byte array not on a byte boundary still reads and writes', () => {
+	const buffer	= new Uint8Array([0x21, 0x43, 0x65]);
+	const x			= new (bin.typedArray.BitFields({ a: 4, bytes: bin.bitfields.Array(2, 8), b: 4 }))(buffer.buffer, 0, 1)[0];
+
+	assert.deepEqual([x.a, x.bytes[0], x.bytes[1], x.b], [1, 0x32, 0x54, 6]);
+	x.bytes[0] = 0xff;
+	assert.deepEqual([...buffer], [0xf1, 0x4f, 0x65]);
+});
+
+test('Float: valueOf agrees with the general path for every pattern of the small formats', () => {
+	const general = (f: typeof bin.float16, raw: number) => +bin.float64.to(bin.float64.pack(f.split(raw)));	// splits into parts and repacks as a double
+	for (const [f, bits] of [[bin.float4, 4], [bin.float8e4m3, 8], [bin.float8e5m2, 8], [bin.float16, 16], [bin.Bfloat16, 16]] as const) {
+		for (let raw = 0; raw < 2 ** bits; raw++)
+			assert.ok(Object.is(+f.to(raw), general(f, raw)), `${bits} bit pattern ${raw}`);
+	}
+	let seed = 1;
+	for (const raw of [0, 0x80000000, 1, 0x007fffff, 0x00800000, 0x7f7fffff, 0x7f800000, 0xff800000, 0x7fc00000, 0xffffffff, ...Array.from({length: 20000}, () => (seed = (seed * 1664525 + 1013904223) >>> 0))])
+		assert.ok(Object.is(+bin.float32.to(raw), +bin.float64.to(bin.float64.pack(bin.float32.split(raw)))), `float32 pattern ${raw.toString(16)}`);
 });
 
 //=============================================================================

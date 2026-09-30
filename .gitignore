@@ -1,4 +1,5 @@
 node_modules
+assistant
 dist
 *.tgz
 *.tsbuildinfo

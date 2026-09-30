@@ -309,7 +309,7 @@ export function bitsView<N extends number>(len: N, littleEndian?: boolean, fixed
 		const shift2: any	= len > 32 ? BigInt(shift1) : shift1;
 		const mask: any		= len > 32 ? ((1n << BigInt(len)) - 1n) << shift2 : ((1 << len) - 1) << shift1;
 		return shift1 ? {
-			get: (dv: DataView, offset: number) => ((bytes.get(dv, offset >> 3) as any) >> shift2) & mask,
+			get: (dv: DataView, offset: number) => ((bytes.get(dv, offset >> 3) as any) & mask) >> shift2,
 			set: (dv: DataView, offset: number, v: any) => {
 				const boffset = offset >> 3;
 				bytes.set(dv, boffset, ((bytes.get(dv, boffset) as any) & ~mask) | ((v << shift2) & mask));
@@ -443,8 +443,11 @@ export function BitFieldsViewer<T extends Descriptor>(desc: T, be = false, fixed
 		if ('length' in b) {
 			const length	= Number(b.length);
 			const bits		= calcBits(b.descriptor);
+			const bytes		= b.descriptor === 8 ? Uint8Array : b.descriptor === -8 ? Int8Array : undefined;	// a proxy costs ~100x a typed array view
 			return {
 				get(dv: DataView, offset: number) {
+					if (bytes && !(offset & 7))
+						return new bytes(dv.buffer as ArrayBuffer, dv.byteOffset + (offset >> 3), length) as any;
 					return new Proxy({}, {
 						get(_target, prop) {
 							if (prop === 'length')
@@ -485,31 +488,31 @@ export function BitFieldsViewer<T extends Descriptor>(desc: T, be = false, fixed
 		};
 	}
 
-	const	props: PropertyDescriptorMap = {};
-	let		offset = 0;
-	for (const key in desc) {
-		const value		= desc[key] as any;
-		const viewer	= BitFieldsViewer(value, be, fixedOffset !== undefined ? fixedOffset + offset : undefined);
-
-		const localOffset = offset;
-		props[key] = {
-			enumerable: true,
-			get(this: any)				{ return viewer.get(this.__dv, this.__offset + localOffset); },
-			set(this: any, value: any)	{ viewer.set(this.__dv, this.__offset + localOffset, value); }
+	// a class per descriptor makes a view one cheap allocation, not an object plus two defineProperty calls
+	class View {
+		#dv:		DataView;
+		#offset:	number;
+		constructor(dv: DataView, offset: number) {
+			this.#dv		= dv;
+			this.#offset	= offset;
 		}
+		static define(key: string, viewer: BitViewer<any>, localOffset: number) {
+			Object.defineProperty(View.prototype, key, {
+				enumerable: true,
+				get(this: View)				{ return viewer.get(this.#dv, this.#offset + localOffset); },
+				set(this: View, value: any)	{ viewer.set(this.#dv, this.#offset + localOffset, value); }
+			});
+		}
+	}
 
+	let offset = 0;
+	for (const key in desc) {
+		const value = desc[key] as any;
+		View.define(key, BitFieldsViewer(value, be, fixedOffset !== undefined ? fixedOffset + offset : undefined), offset);
 		offset += calcBits(value);
 	}
 
-	const proto = Object.create(null);
-	Object.defineProperties(proto, props);
-
-	const get = (dv: DataView, offset: number) => {
-		const result = Object.create(proto);
-		Object.defineProperty(result, '__dv', {value: dv, enumerable: false, writable: false});
-		Object.defineProperty(result, '__offset', {value: offset, enumerable: false, writable: false});
-		return result;
-	};
+	const get = (dv: DataView, offset: number) => new View(dv, offset) as any;
 
 	return {
 		get,
