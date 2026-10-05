@@ -920,8 +920,8 @@ export function RemainingRepeat<T extends Type>(type: T, split = (_s: any, v: Re
 					if (r === undefined)
 						break;
 					if (r instanceof Promise)
-						return r.then(r => {merge(s.obj, r); return asyncPath();});
-					merge(s.obj, r);
+						return r.then(r => {s.obj = merge(s.obj, r); return asyncPath();});
+					s.obj = merge(s.obj, r);
 				} else {
 					const r = read_merge(s, type);
 					if (r instanceof Promise)

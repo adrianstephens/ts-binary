@@ -63,22 +63,23 @@ export function read<T extends sync.TypeReader|async.TypeReader>(s: any, spec: T
 	if (isReader(spec))
 		return spec.get(s);
 
-	obj = s.pushObj(obj);
+	// Into `s.obj`, not the object pushed: a merged class instance may take its place (`merge`).
+	s.pushObj(obj);
 
     return after(Object.entries(spec).reduce((acc: any, [k, t]) => 
         after(acc, () => {
 			try {
-            	return after(read(s, t), value => obj[k] = value);
+            	return after(read(s, t), value => s.obj[k] = value);
 			} catch (e: any) {
 				throw e.toString() + '.' + k;
 			}
-		}), undefined), () => s.popObj(obj)
+		}), undefined), () => s.popObj()
 	);
 }
 
 export function read_merge<T extends Type>(s: _stream, specs: T): MaybePromise<void> {
 	if (isReader(specs))
-		return after(specs.get(s as any), value => merge(s.obj, value));
+		return after(specs.get(s as any), value => { s.obj = merge(s.obj, value); });
 
 	return Object.entries(specs).reduce((acc: any, [k, v]) =>
 		after(acc, () => after(read(s as any, v as any), value => merge(s.obj, value, k)))

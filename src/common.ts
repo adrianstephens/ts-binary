@@ -455,19 +455,26 @@ export function chain<T>(v: T) {
     return new Chain(v);
 }
 
+// `value` read into the object under construction `obj`, returning what is then that object: with `k`, `obj` with `value` at `k`. Without, `value`'s fields
+// join `obj`'s -- unless it is a class instance, which instead takes `obj`'s other fields and `obj`'s place, so the result keeps its class's methods.
 export function merge(obj: any, value: any, k?: string) {
-	if (value !== undefined) {
-		if (k) {
-			const current = obj[k];
-			if (current && typeof value === 'object' && typeof current === 'object' && value.constructor === Object && current.constructor === Object)
-				Object.assign(current, value);
-			else
-				obj[k] = value;
-		} else {
-			// Fields only: no `Object.setPrototypeOf` re-classing `obj`, which tison's wasm backend cannot compile.
-			Object.assign(obj, value);
-		}
+	if (value === undefined)
+		return obj;
+	if (k) {
+		const current = obj[k];
+		if (current && typeof value === 'object' && typeof current === 'object' && value.constructor === Object && current.constructor === Object)
+			Object.assign(current, value);
+		else
+			obj[k] = value;
+		return obj;
 	}
+	if (typeof value === 'object' && value.constructor !== Object) {
+		for (const key of Object.keys(obj))
+			if (!(key in value))
+				value[key] = obj[key];
+		return value;
+	}
+	return Object.assign(obj, value);
 }
 
 //-----------------------------------------------------------------------------

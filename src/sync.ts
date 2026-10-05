@@ -71,7 +71,7 @@ export class _stream extends common_stream {
 		if (obj) {
 			this.obj = obj;
 			read_merge(this, spec);
-			return obj;
+			return this.obj;
 		}
 		return read(this, spec);
 	}
@@ -165,14 +165,19 @@ export function read<T extends TypeReader>(s: _stream, spec: T) : ReadType<T> {
 	if (isReader(spec))
 		return spec.get(s);
 
-	const	obj = s.pushObj();
-	Object.entries(spec).forEach(([k, t]) => obj[k] = read(s, t));
-	return s.popObj(obj);
+	// Into `s.obj`, read after the value: a merged class instance may take its place (`merge`).
+	s.pushObj();
+	for (const [k, t] of Object.entries(spec)) {
+		const value = read(s, t);
+		s.obj[k] = value;
+	}
+	return s.popObj();
 }
 
 function read_merge<T extends TypeReader>(s: _stream, specs: T) {
 	if (isReader(specs)) {
-		merge(s.obj, specs.get(s));
+		const value = specs.get(s);
+		s.obj = merge(s.obj, value);
 
 	} else {
 		for (const [k, v] of Object.entries(specs))

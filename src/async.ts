@@ -77,7 +77,7 @@ export class _stream extends common_stream {
 	read<T extends TypeReader>(spec: T, obj?: any) {
 		if (obj) {
 			this.obj = obj;
-			return read_merge(this, spec).then(() => obj);
+			return read_merge(this, spec).then(() => this.obj);
 		}
 		return read(this, spec);
 	}
@@ -238,17 +238,19 @@ export async function read<T extends TypeReader>(s: _stream, spec: T) : Promise<
 	if (isReader(spec))
 		return spec.get(s);
 
-	const obj = s.pushObj();
+	// Into `s.obj`, not the object pushed: a merged class instance may take its place (`merge`).
+	s.pushObj();
 	await Object.entries(spec).reduce((acc: any, [k, t]) => 
-		acc.then(() => read(s, t).then(value => obj[k] = value)),
+		acc.then(() => read(s, t).then(value => s.obj[k] = value)),
 		Promise.resolve()
 	);
-	return s.popObj(obj);
+	return s.popObj();
 }
 
 async function read_merge<T extends TypeReader>(s: _stream, specs: T): Promise<void> {
 	if (isReader(specs)) {
-		merge(s.obj, await specs.get(s));
+		const value = await specs.get(s);
+		s.obj = merge(s.obj, value);
 
 	} else {
 		await Object.entries(specs).reduce((acc: any, [k, t]) =>
