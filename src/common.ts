@@ -464,9 +464,8 @@ export function merge(obj: any, value: any, k?: string) {
 			else
 				obj[k] = value;
 		} else {
+			// Fields only: no `Object.setPrototypeOf` re-classing `obj`, which tison's wasm backend cannot compile.
 			Object.assign(obj, value);
-			if (value.constructor)
-				Object.setPrototypeOf(obj, value.constructor.prototype);
 		}
 	}
 }
