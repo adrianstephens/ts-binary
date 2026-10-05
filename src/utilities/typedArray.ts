@@ -35,26 +35,6 @@ export interface TypedArray<R = any> extends ArrayBufferView {
 	toString(): string;
 }
 
-const TypedArrayProto = {
-    copyWithin: 	Array.prototype.copyWithin,
-    every: 			Array.prototype.every,
-    fill: 			Array.prototype.fill,
-    filter: 		Array.prototype.filter,
-    find: 			Array.prototype.find,
-    findIndex: 		Array.prototype.findIndex,
-    forEach: 		Array.prototype.forEach,
-    indexOf: 		Array.prototype.indexOf,
-    join: 			Array.prototype.join,
-    lastIndexOf: 	Array.prototype.lastIndexOf,
-    map: 			Array.prototype.map,
-    reduce: 		Array.prototype.reduce,
-    reduceRight: 	Array.prototype.reduceRight,
-    reverse: 		Array.prototype.reverse,
-    some: 			Array.prototype.some,
-    sort: 			Array.prototype.sort,
-    toString: 		Array.prototype.toString,
-};
-
 export interface TypedArrayLike {
 	byteLength: number,
 }
@@ -117,8 +97,13 @@ function TypedArray<R>(backingFactory: TypedArrayBackingFactory<R>, BYTES_PER_EL
 	const bpe = BYTES_PER_ELEMENT ?? 1;
 
 	function make(buffer: ArrayBufferLike, byteOffset: number, begin: number, length: number): TypedArray<R> {
-		const backing = backingFactory(buffer, byteOffset, begin, length);
-		return new Proxy(Object.assign(Object.create(TypedArrayProto), {
+		const backing	= backingFactory(buffer, byteOffset, begin, length);
+		const get		= (i: number) => backing.get(i);
+		// A relative index, as the typed array methods take one: negative counts from the end, clamped to [0, length].
+		const at		= (i: number | undefined, otherwise: number) => i === undefined ? otherwise : i < 0 ? Math.max(length + i, 0) : Math.min(i, length);
+		const values	= () => Array.from({length}, (_, i) => get(i));
+		// The typed array methods as the view's own, over its backing: no `Array.prototype` method run on a proxy, which asks `has` for each index.
+		const view = new Proxy({
 			length,
 			buffer,
 			byteOffset,
@@ -143,7 +128,100 @@ function TypedArray<R>(backingFactory: TypedArrayBackingFactory<R>, BYTES_PER_EL
 					}
 				};
 			},
-		}), {
+			copyWithin(target: number, start: number, end?: number) {
+				const from = values(), to = at(target, 0), s = at(start, 0), n = Math.min(at(end, length) - s, length - to);
+				for (let i = 0; i < n; i++)
+					backing.set(to + i, from[s + i]);
+				return view;
+			},
+			every(callback: (value: R, index: number, array: TypedArray<R>) => unknown, thisArg?: any) {
+				for (let i = 0; i < length; i++)
+					if (!callback.call(thisArg, get(i), i, view))
+						return false;
+				return true;
+			},
+			some(callback: (value: R, index: number, array: TypedArray<R>) => unknown, thisArg?: any) {
+				for (let i = 0; i < length; i++)
+					if (callback.call(thisArg, get(i), i, view))
+						return true;
+				return false;
+			},
+			find(callback: (value: R, index: number, array: TypedArray<R>) => boolean, thisArg?: any) {
+				for (let i = 0; i < length; i++)
+					if (callback.call(thisArg, get(i), i, view))
+						return get(i);
+				return undefined;
+			},
+			findIndex(callback: (value: R, index: number, array: TypedArray<R>) => boolean, thisArg?: any) {
+				for (let i = 0; i < length; i++)
+					if (callback.call(thisArg, get(i), i, view))
+						return i;
+				return -1;
+			},
+			forEach(callback: (value: R, index: number, array: TypedArray<R>) => void, thisArg?: any) {
+				for (let i = 0; i < length; i++)
+					callback.call(thisArg, get(i), i, view);
+			},
+			fill(value: R, start?: number, end?: number) {
+				for (let i = at(start, 0), e = at(end, length); i < e; i++)
+					backing.set(i, value);
+				return view;
+			},
+			filter(callback: (value: R, index: number, array: TypedArray<R>) => any, thisArg?: any) {
+				return fromArray(values().filter((v, i) => callback.call(thisArg, v, i, view)));
+			},
+			map(callback: (value: R, index: number, array: TypedArray<R>) => any, thisArg?: any) {
+				return fromArray(values().map((v, i) => callback.call(thisArg, v, i, view)));
+			},
+			indexOf(searchElement: R, fromIndex?: number) {
+				for (let i = at(fromIndex, 0); i < length; i++)
+					if (get(i) === searchElement)
+						return i;
+				return -1;
+			},
+			lastIndexOf(searchElement: R, fromIndex?: number) {
+				for (let i = fromIndex === undefined ? length - 1 : fromIndex < 0 ? length + fromIndex : Math.min(fromIndex, length - 1); i >= 0; i--)
+					if (get(i) === searchElement)
+						return i;
+				return -1;
+			},
+			join(separator = ',') {
+				return values().join(separator);
+			},
+			toString() {
+				return values().join(',');
+			},
+			// `initial` as given, not defaulted: an empty view with none is a TypeError.
+			reduce(callback: (prev: any, curr: R, index: number, array: TypedArray<R>) => any, ...initial: any[]) {
+				if (!initial.length && !length)
+					throw new TypeError('Reduce of empty array with no initial value');
+				let acc = initial.length ? initial[0] : get(0);
+				for (let i = initial.length ? 0 : 1; i < length; i++)
+					acc = callback(acc, get(i), i, view);
+				return acc;
+			},
+			reduceRight(callback: (prev: any, curr: R, index: number, array: TypedArray<R>) => any, ...initial: any[]) {
+				if (!initial.length && !length)
+					throw new TypeError('Reduce of empty array with no initial value');
+				let acc = initial.length ? initial[0] : get(length - 1);
+				for (let i = initial.length ? length - 1 : length - 2; i >= 0; i--)
+					acc = callback(acc, get(i), i, view);
+				return acc;
+			},
+			reverse() {
+				const v = values();
+				for (let i = 0; i < length; i++)
+					backing.set(i, v[length - 1 - i]);
+				return view;
+			},
+			// A typed array sorts numerically by default, not as strings.
+			sort(compareFn?: (a: R, b: R) => number) {
+				const v = values().sort(compareFn ?? ((a, b) => a < b ? -1 : a > b ? 1 : 0));
+				for (let i = 0; i < length; i++)
+					backing.set(i, v[i]);
+				return view;
+			},
+		}, {
 			get(target, prop) {
 				if (prop in target)
 					return target[prop as keyof typeof target];
@@ -160,6 +238,7 @@ function TypedArray<R>(backingFactory: TypedArrayBackingFactory<R>, BYTES_PER_EL
 				return false;
 			}
 		}) as TypedArray<R>;
+		return view;
 	}
 
 	function create(n: number) {

@@ -627,6 +627,29 @@ test('Measure: determine serialisation size', () => {
 	assert.equal(measure3, 3);
 });
 
+test('as: a view in the other byte order (DataViewTypedArray) indexes, writes through, and has the array methods', () => {
+	const bytes	= new Uint8Array([0, 3, 0, 1, 0, 4, 0, 2]);
+	const view	= bin.typedArray.as(bytes, 'Uint16', bin.isLittleEndian) as bin.typedArray.TypedArray<number>;
+	assert.deepEqual([view.length, view[0], view[3], view[4]], [4, 3, 2, undefined]);
+	view[1] = 9;
+	assert.equal(bytes[3], 9, 'a write lands in the buffer, big-endian');
+	assert.deepEqual([...view], [3, 9, 4, 2]);
+	assert.deepEqual([view.every(x => x > 1), view.some(x => x > 8), view.find(x => x > 3), view.findIndex(x => x > 3)], [true, true, 9, 1]);
+	assert.deepEqual([view.indexOf(4), view.lastIndexOf(7), view.join('-'), view.toString()], [2, -1, '3-9-4-2', '3,9,4,2']);
+	assert.deepEqual([[...view.map(x => x * 2)], [...view.filter(x => x < 5)], view.reduce((a, x) => a + x), view.reduceRight((a, x) => a + String(x), '')], [[6, 18, 8, 4], [3, 4, 2], 18, '2493']);
+	const seen: number[] = [];
+	view.forEach((x, i) => seen.push(x * 10 + i));
+	assert.deepEqual(seen, [30, 91, 42, 23]);
+	view.sort((a, b) => a - b);
+	assert.deepEqual([...bytes], [0, 2, 0, 3, 0, 4, 0, 9], 'sort is in place');
+	view.reverse();
+	view.copyWithin(0, 2);
+	assert.deepEqual([...view], [3, 2, 3, 2]);
+	view.fill(7, 1, 3);
+	assert.deepEqual([...view], [3, 7, 7, 2]);
+	assert.deepEqual([[...view.subarray(1, 3)], [...view.slice(2)]], [[7, 7], [7, 2]]);
+});
+
 //=============================================================================
 // Async operations
 //=============================================================================
