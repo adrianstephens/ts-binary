@@ -587,7 +587,12 @@ export function Size<T extends Type>(len: TypeX<number|bigint>, type: T, skip0 =
 			if (v === undefined)
 				return x.put(s, 0) as ReturnType<typeof x.put>;
 			const len2 = measure(type as sync.Type, v as ReadType<sync.Type>, s);
-			return after(x.put(s, len2), () => write(s, type, v));
+			// written where it was measured and where get reads it: in a stream of its own, so that what aligns (to its
+			// start, not the stream's) lines up
+			return after(x.put(s, len2), () => {
+				const start = s.tell();
+				return after(write(s.offsetStream(start, Number(len2)) as typeof s, type, v), () => s.seek(start + Number(len2)));
+			});
 		}) as put<ReadType<T> | undefined>
 	};
 }
@@ -628,6 +633,7 @@ export function Offset<T extends Type>(offset: TypeX<number|bigint>, type: T, sk
 
 		put: ((s, v) => {
 			const offsetPos = s.tell();
+			const obj = s.obj;
 			return after(x.put(s, 0), () => {
 				if (v === undefined)
 					return undefined;
@@ -636,11 +642,15 @@ export function Offset<T extends Type>(offset: TypeX<number|bigint>, type: T, sk
 				s.atend = (s: any) => {
 					const start = s.tell();
 					const s2 = s.offsetStream(start);
+					s2.obj = obj;
 					return after(write(s2, type, v), () => {
 						const size = s2.tell();
 						s.seek(offsetPos);
+						const outer = s.obj;
+						s.obj = obj;
 						return after(x.put(s, start), () => {
-							s.skip(size);
+							s.obj = outer;
+							s.seek(start + size);
 							atend?.(s);
 						});
 					});

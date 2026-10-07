@@ -119,6 +119,12 @@ export class growingStream extends _stream {
 	}
 }
 
+export function toBytes<T extends {write(s: _stream): void}>(t: T) {
+	const s = new growingStream();
+	t.write(s);
+	return s.terminate();
+}
+
 export class dummyStream extends _stream {
 	constructor(be?: boolean, obj?: any) {
 		let buffer = new ArrayBuffer(1024);

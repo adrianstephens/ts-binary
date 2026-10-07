@@ -134,9 +134,10 @@ export function writen(s: sync._stream, type: sync.TypeWriter, v: any): void;
 export function writen(s: async._stream, type: async.TypeWriter, v: any): Promise<void>;
 export function writen(s: _stream, type: sync.TypeWriter|async.TypeWriter, v: any): MaybePromise<void>;
 export function writen(s: any, type: any, v: any) {
-    return v.reduce((acc: any, i: any) => 
-        after(acc, () => write(s, type, i))
-    , undefined);
+	s.pushObj(v);
+	return after(v.reduce((acc: any, i: any) =>
+		after(acc, () => write(s, type, i))
+	, undefined), () => s.popObj(v));
 }
 
 interface TypeTX<T, T2>	{
